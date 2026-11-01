@@ -18,7 +18,7 @@ The directory numbers identify modules; the recommended reading order starts wit
 |---|---|---:|
 | [02-standards/conventions-and-guidelines.md](02-standards/conventions-and-guidelines.md) | Set up tools and the official developer plugin; learn coding, Git, design, DI, and testing expectations. | 6 hours |
 | [03-architecture/solution-and-project-structure.md](03-architecture/solution-and-project-structure.md) | Find the owning repository/project and understand dependency and extension boundaries. | 4 hours |
-| [01-architecture/runner-execution-flow.md](01-architecture/runner-execution-flow.md) | Trace configuration, construction, runtime coordination, results, and cleanup through Runner. | 7 hours |
+| [01 — General flow](01-general-flow/runner-execution-flow.md) | Trace configuration, construction, runtime coordination, results, and cleanup through Runner, with worked hooks and failure-path examples. | 7 hours |
 | [04-devops/cicd-and-package-publishing.md](04-devops/cicd-and-package-publishing.md) | Follow CI, local package validation, release effects, PackageMirror, and documentation synchronization. | 4 hours |
 | Contributor rehearsal below | Combine the modules in one small change proposal and review. | 3 hours |
 | **Total** | Reading, source tracing, exercises, and review notes are included. | **24 hours** |
@@ -26,15 +26,33 @@ The directory numbers identify modules; the recommended reading order starts wit
 ```text
 QaaS-Contributors-Shampoo/
 ├── README.md
-├── 01-architecture/
+├── 01-general-flow/
 │   └── runner-execution-flow.md
 ├── 02-standards/
 │   └── conventions-and-guidelines.md
 ├── 03-architecture/
 │   └── solution-and-project-structure.md
-└── 04-devops/
-    └── cicd-and-package-publishing.md
+├── 04-devops/
+│   └── cicd-and-package-publishing.md
+└── examples/
+    ├── README.md
+    ├── general-flow/
+    ├── hooks-and-policies/
+    └── protocol-extension/
 ```
+
+## Code examples and extension exercises
+
+Each guide now separates **existing source excerpts**, **new example implementations**, and **proposed integration changes**. Source links identify the exact revision; a proposed type or YAML key is never presented as an already shipped capability.
+
+| Module | Useful feature to explore |
+|---|---|
+| [General flow](01-general-flow/runner-execution-flow.md) | Deterministic order generation, snapshot probes, explicit stage ordering, non-vacuous assertions, evidence summaries, and cleanup that retains multiple failures |
+| [Standards](02-standards/conventions-and-guidelines.md) | A configurable HTTP-success assertion with boundary tests, reflection discovery and execution-local ownership |
+| [Projects and extension boundaries](03-architecture/solution-and-project-structure.md) | A JSON-lines sender wired through Framework and Runner, a Mocker maintenance response with `Retry-After`, composed stop policies and explicit JSON serialization |
+| [CI/CD](04-devops/cicd-and-package-publishing.md) | Package-only consumer smoke checks, explicit stable-tag policy, mirror selection and source-driven documentation |
+
+The [reproducible example laboratories](examples/README.md) include the source and test projects: **18 general-flow checks, 35 hook/policy tests, and 19 protocol integration checks passed**. The protocol lab modifies disposable pinned source clones; it does not install a new feature into your existing QaaS repositories. The DevOps guide records its separate local package and tag-selection verification. Full deployment and unexecuted host-level scenarios remain explicitly identified in the relevant chapters. Choose one laboratory during the contributor rehearsal; running every lab in depth is optional practice beyond the standard schedule.
 
 ## Eight-day study schedule
 

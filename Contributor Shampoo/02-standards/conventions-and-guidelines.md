@@ -97,6 +97,79 @@ These are design questions, not a demand to refactor every older abstraction. A 
 
 ## 5. Required design-pattern vocabulary
 
+The example immediately below turns the design principles into one concrete contribution. New examples in this guide were checked against Framework commit `11f3ec66126cf878dc34c4fab8c152ced521f3ea` and Runner commit `7c3af33b093b500b0dc7fdcd2cffe2bb7f60c8ba`; older links elsewhere preserve the original learning baseline.
+
+### Worked feature: accept any HTTP success status, but reject an empty result
+
+An endpoint may return `200`, `201`, or `204` legitimately. A useful assertion checks that **all retained responses are 2xx and at least a configured number arrived**. The count condition prevents an empty output from passing vacuously. This is a domain rule, so implement an external assertion hook; do not add HTTP-specific conditionals to Runner's assertion loop or change Mocker's server implementation.
+
+The following is the complete proposed hook, not an existing built-in class. Put it in a `net10.0` class library whose QaaS SDK version matches the host. Its concrete signature comes from [BaseAssertion](https://github.com/TheSmokeTeam/QaaS.Framework/blob/11f3ec66126cf878dc34c4fab8c152ced521f3ea/QaaS.Framework.SDK/Hooks/Assertion/BaseAssertion.cs); data selection uses the existing [session/output extensions](https://github.com/TheSmokeTeam/QaaS.Framework/blob/11f3ec66126cf878dc34c4fab8c152ced521f3ea/QaaS.Framework.SDK/Extensions/SessionDataExtensions.cs), and status lives in [HTTP metadata](https://github.com/TheSmokeTeam/QaaS.Framework/blob/11f3ec66126cf878dc34c4fab8c152ced521f3ea/QaaS.Framework.SDK/Session/MetaDataObjects/Http.cs).
+
+```csharp
+using System.Collections.Immutable;
+using System.ComponentModel.DataAnnotations;
+using QaaS.Framework.SDK.DataSourceObjects;
+using QaaS.Framework.SDK.Extensions;
+using QaaS.Framework.SDK.Hooks.Assertion;
+using QaaS.Framework.SDK.Session.SessionDataObjects;
+
+namespace Common.Shampoo;
+
+public sealed class HttpSuccessConfiguration
+{
+    [Required] public string SessionName { get; set; } = string.Empty;
+    [Required] public string OutputName { get; set; } = string.Empty;
+    [Range(1, int.MaxValue)] public int MinimumResponses { get; set; } = 1;
+}
+
+public sealed class HttpSuccess : BaseAssertion<HttpSuccessConfiguration>
+{
+    public override bool Assert(IImmutableList<SessionData> sessions,
+        IImmutableList<DataSource> dataSources)
+    {
+        var output = sessions.GetSessionDataByName(Configuration.SessionName)
+            .GetOutputByName(Configuration.OutputName);
+        var unexpectedStatuses = 0;
+        foreach (var item in output.Data)
+        {
+            var status = item.MetaData?.Http?.StatusCode
+                ?? throw new InvalidOperationException(
+                    "HTTP status metadata is missing; retain metadata for this output.");
+            if (status < 200 || status > 299)
+                unexpectedStatuses++;
+        }
+
+        var passed = output.Data.Count >= Configuration.MinimumResponses
+            && unexpectedStatuses == 0;
+        AssertionMessage = $"Received {output.Data.Count} responses; "
+            + $"required at least {Configuration.MinimumResponses}; "
+            + $"{unexpectedStatuses} had a non-2xx status.";
+        return passed;
+    }
+}
+```
+
+The class has one responsibility: evaluate retained session data. It does not call the endpoint again, open a socket, mutate the output, or publish a report. It uses local counters so repeated calls do not accumulate previous failures. The inherited diagnostic properties are still mutable: do not share one hook instance across concurrent invocations merely because its counter is local.
+
+Reference the hook library/package from the Runner consumer project so its assembly and dependencies reach the application output. Then add this **assertion-section fragment** to a plan that already defines session `checkout` and an HTTP output action named `submit-order`, with metadata retained:
+
+```yaml
+Assertions:
+  - Name: checkout-http-success
+    Assertion: Common.Shampoo.HttpSuccess
+    SessionNames: [checkout]
+    AssertionConfiguration:
+      SessionName: checkout
+      OutputName: submit-order
+      MinimumResponses: 1
+```
+
+`SessionNames` filters the data supplied by Runner; `AssertionConfiguration.SessionName` selects within that filtered data. They are deliberately consistent. The exact outer properties are defined by [AssertionBuilder](https://github.com/TheSmokeTeam/QaaS.Runner/blob/7c3af33b093b500b0dc7fdcd2cffe2bb7f60c8ba/QaaS.Runner.Assertions/ConfigurationObjects/AssertionBuilder.cs). The fragment is not a complete runnable plan: it requires the existing session, action, and installed hook.
+
+`false` means the observed behavior violated the rule. Missing status metadata or a missing output name is instead a broken precondition and throws. [Assertion.Execute](https://github.com/TheSmokeTeam/QaaS.Runner/blob/7c3af33b093b500b0dc7fdcd2cffe2bb7f60c8ba/QaaS.Runner.Assertions/AssertionObjects/Assertion.cs) maps thrown exceptions to `Broken`; otherwise it maps the Boolean to `Passed`/`Failed` unless the hook explicitly overrides `AssertionStatus`. This hook leaves that override unset. Configuration binding and DataAnnotations validation remain in the base class; at this source revision successful validation returns an **empty list**, so consumers must not assume that success is exclusively `null`.
+
+To extend the feature to accept a configurable status range, add annotated lower/upper bounds to `HttpSuccessConfiguration`, validate that lower does not exceed upper, replace the two constants, and add boundary tests. Do not silently accept missing metadata as success. No Runner or Mocker API change is needed for this variant; publish/install the new hook package and update its configuration/documentation. Actual protocol changes follow the separate compiled-core route in the project-boundary guide.
+
 Read each linked pattern's intent and structure, then use the question in the final column to reason about QaaS. These are conceptual lenses: a class ending in `Factory` is not automatically the GoF Factory Method, and the pack does not claim every pattern is implemented literally in QaaS.
 
 | Pattern | Concise overview | Application or review question |
@@ -114,9 +187,11 @@ Read each linked pattern's intent and structure, then use the question in the fi
 | [Chain of Responsibility](https://refactoring.guru/design-patterns/chain-of-responsibility) | Order handlers so each can act or stop further work. | How does policy order change whether another iteration is allowed? |
 | [Strategy](https://refactoring.guru/design-patterns/strategy) | Make an algorithm replaceable behind a stable contract. | Which part varies: domain assertion logic, transport, or serialization? |
 
-`IIndex` and delegate factories are Autofac capabilities to learn, not an assertion that both occur in the current Runner composition. Find actual registrations and consumers before proposing their use. For concrete QaaS construction and policy examples, follow the source links in [Runner execution flow](../01-architecture/runner-execution-flow.md).
+`IIndex` and delegate factories are Autofac capabilities to learn, not an assertion that both occur in the current Runner composition. Find actual registrations and consumers before proposing their use. For concrete QaaS construction and policy examples, follow the source links in [Runner execution flow](../01-general-flow/runner-execution-flow.md).
 
 Exercise: choose Builder, Strategy, and Chain of Responsibility. Draw the participating QaaS types, label who calls whom, and identify one limitation of each analogy. Then explain why using a Singleton merely to avoid passing dependencies would be a poor reason to introduce shared state.
+
+For the worked feature, **Strategy** describes replacing the assertion algorithm while Runner keeps the execution contract. **Adapter** describes the existing transport code translating an HTTP response into QaaS metadata; the new assertion consumes that representation rather than adapting HTTP again. **Builder** belongs to `AssertionBuilder`, which selects the hook and builds the runtime assertion; the hook itself is not a builder. A proposed timing decorator would have to forward `Context`, configuration validation, diagnostics, attachments, and explicit status as well as `Assert`, so wrapping only the Boolean method would not preserve the complete `IAssertion` contract. Runner already times assertions in `Assertion.Execute`; use that measurement unless the new requirement specifically needs a different timing boundary.
 
 ## 6. Dependency injection and ownership
 
@@ -131,6 +206,17 @@ DI gives an object its collaborators from outside, usually through its construct
 The analogues are not a guarantee of identical scope hierarchies. A scope is a deliberate lifetime boundary, not automatically one session or one test. Read [Microsoft service lifetimes](https://learn.microsoft.com/en-us/dotnet/core/extensions/dependency-injection/service-lifetimes) and [Autofac instance scopes](https://docs.autofac.org/en/latest/lifetime/instance-scope.html).
 
 The inspected [Runner registrations](https://github.com/TheSmokeTeam/QaaS.Runner/blob/8ccd6f53f9d23645ee117eef48ea3d56f24acfd0/QaaS.Runner/ExecutionBuilder.cs#L730) register context instances as `SingleInstance` and hook collections per lifetime scope. That does not mean all QaaS executions in a process share one context. Trace which builder creates each container and which object disposes it. Registering a type as singleton also does not make it thread-safe.
+
+The same context aliasing is present in the [updated composition root](https://github.com/TheSmokeTeam/QaaS.Runner/blob/7c3af33b093b500b0dc7fdcd2cffe2bb7f60c8ba/QaaS.Runner/ExecutionBuilder.cs#L729). These are actual source statements inside its child-scope registration callback:
+
+```csharp
+containerBuilder.RegisterInstance(Context).As<InternalContext>().SingleInstance();
+containerBuilder.RegisterInstance(Context).As<Context>().SingleInstance();
+```
+
+Both registrations refer to the **same supplied object**, not two independently constructed contexts. A second execution can supply a different context instance. If a future feature needs execution-local statistics, keep them in an execution-owned object and register it in the corresponding scope; do not move the hook or its counters to a process-wide static field. Add a two-execution isolation test before introducing that state.
+
+Do not assume Autofac constructor injection automatically applies to reflection hooks. The actual [ByNameObjectCreator](https://github.com/TheSmokeTeam/QaaS.Framework/blob/11f3ec66126cf878dc34c4fab8c152ced521f3ea/QaaS.Framework.Providers/ObjectCreation/ByNameObjectCreator.cs) uses `Activator.CreateInstance`; [HookProvider](https://github.com/TheSmokeTeam/QaaS.Framework/blob/11f3ec66126cf878dc34c4fab8c152ced521f3ea/QaaS.Framework.Providers/Providers/HookProvider.cs) discovers the assembly and assigns context. The worked hook deliberately has a public parameterless constructor. Adding a required `HttpClient` or custom service constructor parameter would require checking and changing the creation path, not just adding an unrelated Autofac registration. An assertion over saved responses needs neither dependency.
 
 Exercise: for one hook, record constructor dependencies, context injection, configuration loading, scope creation, and disposal owner. Explain what would happen if two concurrent sessions mutated the same referenced collection. Distinguish immutable collections from mutable objects contained inside them.
 
@@ -171,6 +257,57 @@ public interface IClock { DateTimeOffset UtcNow { get; } }
 
 Exercise: write a three-row test plan for a configuration change: a valid value, a boundary value, and a rejected value. Add an integration or contract case only where a real boundary is affected. State what would fail without the fix. Avoid sleeps to coordinate tests; use controllable signals or bounded waits with clear diagnostics.
 
+### Tests for the worked assertion
+
+Here is a complete focused NUnit test fixture for the hook above. It constructs real SDK data records, not a mock of the implementation. The namespace imports and data shape match the pinned SDK source.
+
+```csharp
+using System.Collections.Immutable;
+using Common.Shampoo;
+using NUnit.Framework;
+using QaaS.Framework.SDK.DataSourceObjects;
+using QaaS.Framework.SDK.Session.CommunicationDataObjects;
+using QaaS.Framework.SDK.Session.DataObjects;
+using QaaS.Framework.SDK.Session.MetaDataObjects;
+using QaaS.Framework.SDK.Session.SessionDataObjects;
+
+public sealed class HttpSuccessBoundaryTests
+{
+    [TestCase(199, false)]
+    [TestCase(200, true)]
+    [TestCase(201, true)]
+    [TestCase(204, true)]
+    [TestCase(299, true)]
+    [TestCase(300, false)]
+    public void Status_boundaries_are_explicit(int status, bool expected)
+    {
+        var hook = new HttpSuccess
+        {
+            Configuration = new HttpSuccessConfiguration
+                { SessionName = "checkout", OutputName = "submit-order" }
+        };
+        var sessions = ImmutableList.Create(new SessionData
+        {
+            Name = "checkout",
+            Outputs = [new CommunicationData<object>
+            {
+                Name = "submit-order",
+                Data = [new DetailedData<object>
+                {
+                    MetaData = new MetaData { Http = new Http { StatusCode = status } }
+                }]
+            }]
+        });
+        Assert.That(hook.Assert(sessions, ImmutableList<DataSource>.Empty),
+            Is.EqualTo(expected));
+    }
+}
+```
+
+This unit test assigns configuration directly to isolate the predicate. A separate configuration test must invoke the real `LoadAndValidateConfiguration` with `Context.Logger` initialized; otherwise it does not establish YAML/configuration binding. A separate discovery check must instantiate the public hook through `ByNameObjectCreator`, rather than relying solely on `new HttpSuccess()`. The assertion rule also needs cases for no responses, too few responses, missing metadata, a nonexistent output, and a failed call followed by a successful call on the same instance.
+
+For this guide, a separate scratch project referenced the actual Framework Providers project at `11f3ec6` (and its SDK dependency), targeted .NET 10, and ran **21 NUnit cases: 21 passed, 0 failed, 0 skipped**. Fifteen checks covered the six status boundaries above, empty output, minimum count, missing metadata, wrong output name, two real configuration-binding/validation cases, reflection creation, repeated-call state, and two execution-context scopes. The exact displayed test fixture was then extracted from this Markdown and contributed six additional boundary cases to verify that the published snippet itself compiles and runs. This proves compilation and those behaviors; it does not claim a live HTTP Runner/Mocker scenario or a published package-consumer test. Restore reported the existing transitive MessagePack `3.1.7` NU1902 advisory; the focused tests still completed successfully.
+
 ## 8. Modern C# and .NET
 
 Know nullable reference types, generics and constraints, interfaces, delegates, LINQ's deferred execution, records, pattern matching, extension methods, and `IDisposable`. A record's value-oriented syntax does not make every referenced object immutable. Re-enumerating `IEnumerable<T>` may repeat work or consume a one-shot data source. Start with the [C# language reference](https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/) and [record semantics](https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/builtin-types/record).
@@ -178,6 +315,10 @@ Know nullable reference types, generics and constraints, interfaces, delegates, 
 For asynchronous code, distinguish starting work from awaiting its completion. `async` does not guarantee a new thread, and cancellation requires cooperation. Account for exceptions in every task you create; a forgotten task can outlive the state it uses. Study [async/await](https://learn.microsoft.com/en-us/dotnet/csharp/asynchronous-programming/), then compare it with Runner's actual task coordination in the lifecycle guide rather than rewriting synchronous contracts reflexively.
 
 For performance, establish a measurement before optimizing. Look for repeated enumeration, unbounded buffering, excessive allocations, blocking I/O, and unnecessary serialization. The [garbage-collection overview](https://learn.microsoft.com/en-us/dotnet/standard/garbage-collection/) explains managed memory; [diagnostic tools](https://learn.microsoft.com/en-us/dotnet/core/diagnostics/) help determine the actual bottleneck. Garbage collection does not replace timely cleanup of sockets, files, or container-owned resources. Pooling and shared caches add ownership obligations and should follow evidence, not guesswork.
+
+The worked hook reads `CommunicationData<object>.Data`, an `IList<DetailedData<object>>`, so `Count` is available without re-enumerating a deferred source. It examines only metadata and does not deserialize or clone response bodies. A feature that inspects JSON bodies would need a separate declared body contract and cases for null, malformed, and differently deserialized bodies; casting every `Body` to `string` is not justified by `Data<object>`.
+
+The [SDK data record](https://github.com/TheSmokeTeam/QaaS.Framework/blob/11f3ec66126cf878dc34c4fab8c152ced521f3ea/QaaS.Framework.SDK/Session/DataObjects/Data.cs) exposes `Body` and `MetaData` as `init` properties. That prevents reassigning them after construction but does not freeze a dictionary stored inside the body. If a new feature transforms output for comparison, create a separate transformed value; mutating the shared payload would affect later assertions. Use the existing synchronous assertion contract here: marking a helper `async` does not make `IAssertion.Assert` asynchronous, and unawaited work could finish after Runner records the result.
 
 Exercise: inspect one data pipeline and mark the points that materialize a sequence, allocate a payload copy, wait for a task, and release an external resource. Explain which change would alter semantics, even if it appears faster.
 
@@ -189,6 +330,8 @@ Use descriptive PascalCase type/member names and camelCase parameters/locals, `I
 
 Write Markdown with one descriptive H1, ordered heading levels, blank lines around lists and fences, language tags on code blocks, and meaningful link labels. Use relative links for files within this pack and published `docs.qaas.online` URLs for user documentation. Name the working directory for shell commands. Label conceptual snippets and avoid example credentials. Check rendered tables and diagrams in the intended viewer; Mermaid support varies, so each diagram should also have a textual explanation. [CommonMark](https://spec.commonmark.org/) defines the baseline syntax; GitHub adds tables and Mermaid rendering.
 
+For the worked feature, `[Required]` and `[Range]` are executable configuration rules, whereas prose such as “requires one response” is documentation. Keep both synchronized. Add XML documentation to the new public hook/configuration members before contributing the example as a production package, following neighboring hooks; the compact teaching snippet omits those comments. A useful PR description is: “Accept every 2xx response from the configured output while failing when fewer than `MinimumResponses` arrive; distinguish missing HTTP metadata from an observed non-2xx response.” Follow it with the exact tests run and remaining host integration checks. This describes the behavior a reviewer can verify, rather than merely saying that the hook was added.
+
 ## Completion check
 
-You are ready for the architecture modules when you can route a proposed change with the developer plugin, explain its contract and lifetime, select a meaningful regression test, and draft a PR with reproducible evidence. Keep your baseline command output and the short exercises as personal review notes. Continue with [solution and project structure](../03-architecture/solution-and-project-structure.md), then [Runner execution flow](../01-architecture/runner-execution-flow.md).
+You are ready for the architecture modules when you can route a proposed change with the developer plugin, explain its contract and lifetime, select a meaningful regression test, and draft a PR with reproducible evidence. Keep your baseline command output and the short exercises as personal review notes. Continue with [solution and project structure](../03-architecture/solution-and-project-structure.md), then [Runner execution flow](../01-general-flow/runner-execution-flow.md).

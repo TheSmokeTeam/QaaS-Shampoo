@@ -1,6 +1,6 @@
 # Solution and project structure
 
-Budget **4 hours**, including the exercises. Start after [conventions and guidelines](../02-standards/conventions-and-guidelines.md), then continue to the [Runner lifecycle](../01-architecture/runner-execution-flow.md); return to the [study plan](../README.md) whenever you need the wider sequence. Your deliverable is an annotated dependency map and a short placement decision for a proposed contribution.
+Budget **4 hours**, including the exercises. Start after [conventions and guidelines](../02-standards/conventions-and-guidelines.md), then continue to the [Runner lifecycle](../01-general-flow/runner-execution-flow.md); return to the [study plan](../README.md) whenever you need the wider sequence. Your deliverable is an annotated dependency map and a short placement decision for a proposed contribution.
 
 ## Read names at the right level
 
@@ -74,7 +74,7 @@ Runner composes the feature projects. Sessions owns the session/action machinery
 
 The Sessions package reference to `QaaS.Mocker.CommunicationObjects` is significant: a communication contract can connect Runner and Mocker without making Runner depend on all server implementations. Do not turn a need for one message type into a dependency on the whole Mocker host. Conversely, do not assume a package called “Infrastructure” is suitable for every convenient helper. Putting a feature there expands the dependency surface for Assertions, Sessions and Storage.
 
-Evidence: [Runner composition][runner-project], [Runner.Infrastructure][runner-infrastructure], [Runner.Sessions][runner-sessions]. For behavior inside those boundaries, use the [runtime chapter](../01-architecture/runner-execution-flow.md).
+Evidence: [Runner composition][runner-project], [Runner.Infrastructure][runner-infrastructure], [Runner.Sessions][runner-sessions]. For behavior inside those boundaries, use the [runtime chapter](../01-general-flow/runner-execution-flow.md).
 
 ## Mocker ownership and dependency direction
 
@@ -101,11 +101,317 @@ Evidence: [Mocker project][mocker-project], [Controller project][controller-proj
 Trace this separation before adding a new probe:
 
 1. **SDK contract:** [IProbe][iprobe] inherits `IHook` and declares `Run(IImmutableList<SessionData>, IImmutableList<DataSource>)`. Its signature establishes the data available to an implementation; it does not schedule a Runner session.
-2. **SDK convenience base:** [BaseProbe<TConfiguration>][base-probe] supplies context/configuration properties, binding and recursive validation. Its binder rejects unknown configuration by default. The derived implementation supplies `Run`.
+2. **SDK convenience base:** [BaseProbe<TConfiguration>][base-probe] supplies context/configuration properties, binding and recursive validation. Its base class requests strict binder options; verify the effective binding path rather than inferring behavior from that flag alone. The updated general-flow examples demonstrate the current custom binder logging and skipping unknown fields. The derived implementation supplies `Run`.
 3. **Runner scheduling:** [ProbeBuilder][probe-builder] and [Probe][probe-action] live in Runner.Sessions. Read these when the problem concerns constructing/running a probe as an action, rather than the external system operation itself.
 4. **Concrete reusable behavior:** [Common.Probes][probes-project] packages implementations. It directly consumes Framework.Configurations, Protocols, SDK and Serialization. It does not reference the Runner project.
 
 This is why a new reusable probe normally need not modify Runner. A missing protocol implementation or an incompatible SDK contract is different: it changes a shared dependency and may require coordinated downstream package updates. Use the [publishing chapter](../04-devops/cicd-and-package-publishing.md) before treating a local build as proof that separately versioned consumers work.
+
+## Worked extension: a JSON-lines diagnostic sender
+
+**Feature:** capture generated messages in a local `.ndjson` file for inspecting a bounded test fixture without a broker. This is a proposed addition, not a protocol that current QaaS already ships. The complete [sender implementation](../examples/protocol-extension/JsonLinesSender.cs), [source-edit script](../examples/protocol-extension/prepare.py), and [executable verification](../examples/protocol-extension/Program.cs) are included in this pack. Follow the [laboratory instructions](../examples/protocol-extension/README.md) to reproduce it in disposable source clones.
+
+The new example baseline is Framework `11f3ec66126cf878dc34c4fab8c152ced521f3ea` and Runner `7c3af33b093b500b0dc7fdcd2cffe2bb7f60c8ba`. Earlier diagrams retain their explicitly pinned inventory baseline below. Compare a later checkout before applying edits.
+
+### 1. Choose the contract before choosing the class name
+
+The actual [ISender declaration](https://github.com/TheSmokeTeam/QaaS.Framework/blob/11f3ec66126cf878dc34c4fab8c152ced521f3ea/QaaS.Framework.Protocols/Protocols/ISender.cs) is:
+
+```csharp
+public interface ISender : IConnectable
+{
+    public SerializationType? GetSerializationType();
+    public DetailedData<object> Send(Data<object> dataToSend);
+}
+```
+
+It has connection lifecycle methods through `IConnectable` and returns the recorded outgoing item, rather than `void`. Do not generalize that inheritance to every protocol: the current [ITransactor](https://github.com/TheSmokeTeam/QaaS.Framework/blob/11f3ec66126cf878dc34c4fab8c152ced521f3ea/QaaS.Framework.Protocols/Protocols/ITransactor.cs) has its own request/response contract and does **not** inherit `IConnectable`. Match the actual interface for the operation you need.
+
+For a file sink, implement `ISender`, not `ITransactionProcessor`: no response is expected and there is no Mocker request to process. The [current factory](https://github.com/TheSmokeTeam/QaaS.Framework/blob/11f3ec66126cf878dc34c4fab8c152ced521f3ea/QaaS.Framework.Protocols/Protocols/Factories/SenderFactory.cs) selects on concrete `ISenderConfig` types and then checks singular/chunk capability. It does not scan hook DLLs for new YAML protocol names.
+
+### 2. Add the configuration and implementation in Framework.Protocols
+
+The teaching configuration introduces one property:
+
+```csharp
+public sealed record JsonLinesSenderConfig : ISenderConfig
+{
+    [Required, Description("Local file to append one compact JSON document per line.")]
+    public string FilePath { get; set; } = "";
+}
+```
+
+The sender constructor also rejects blank paths so direct C# callers do not bypass the invariant. The full class imports and lifecycle are in [JsonLinesSender.cs](../examples/protocol-extension/JsonLinesSender.cs). Its critical method is:
+
+```csharp
+public DetailedData<object> Send(Data<object> data)
+{
+    ArgumentNullException.ThrowIfNull(data);
+    lock (_gate)
+    {
+        if (!_connected)
+            throw new InvalidOperationException("Connect before sending.");
+        if (data.Body is not byte[] bytes)
+            throw new ArgumentException("Configure Serialize.Serializer: Json to produce bytes.", nameof(data));
+
+        using var document = JsonDocument.Parse(bytes);
+        var line = JsonSerializer.Serialize(document.RootElement);
+        // Open/close on each send: no stream survives a failed action.
+        File.AppendAllText(_path, line + "\n", new UTF8Encoding(false));
+        return new DetailedData<object>
+        {
+            Body = bytes,
+            MetaData = data.MetaData,
+            Timestamp = DateTime.UtcNow
+        };
+    }
+}
+```
+
+The per-instance lock prevents two parallel calls from interleaving a record. Parsing and re-serializing guarantees a compact single-line JSON document even if the input was pretty-printed. The timestamp is assigned only after the write succeeds. Input metadata is preserved. A file error propagates; it is not converted into a false “sent” result. Each write closes its handle so a later failed Runner action cannot strand a stream owned by this example. Distinct publisher instances must use distinct files: the lock is not cross-process coordination. Rotation, disk quotas, fsync guarantees and crash-atomic writes would be separate features with separate failure tests.
+
+`GetSerializationType()` returns `SerializationType.Json`; that describes the communication representation. It does **not** replace configuring the serializer for the outgoing data. [Publisher.Publish](https://github.com/TheSmokeTeam/QaaS.Runner/blob/7c3af33b093b500b0dc7fdcd2cffe2bb7f60c8ba/QaaS.Runner.Sessions/Actions/Publishers/Publisher.cs) sends `dataPair.Serialized` but logs the original item with the returned timestamp. That distinction matters when writing assertions over stored messages.
+
+### 3. Register the Framework factory and all Runner builder paths
+
+Add this arm to `SenderFactory.CreateSender`'s existing type switch; keep the existing chunk/single checks after it:
+
+```csharp
+JsonLinesSenderConfig config => new JsonLinesSender(config),
+```
+
+Use the namespace `QaaS.Framework.Protocols.Examples` from the supplied file. In a production contribution choose the owning namespace/folder convention and provide XML documentation. The example's preparation script uses fully qualified names to make the insertion unambiguous.
+
+Runner must be able to bind, select, update, clone and validate the new option. These are insertion excerpts, not complete replacements for the original methods:
+
+```csharp
+// PublisherBuilderProperties.cs
+[Description("Appends compact JSON documents to a local file")]
+public JsonLinesSenderConfig? JsonLines { get; internal set; }
+
+// PublisherBuilderLogic.cs: inside Reset()
+JsonLines = null;
+
+// Inside Configure(ISenderConfig config)'s switch
+case JsonLinesSenderConfig jsonLines:
+    JsonLines = jsonLines;
+    break;
+
+// Inside GetConfiguration(), before the existing alternatives
+if (JsonLines != null)
+    return JsonLines;
+
+// Inside BuildWithTimeZone()'s allTypes collection initializer
+JsonLines,
+
+// ProtocolChunkSupport.cs: inside SenderModes
+[typeof(JsonLinesSenderConfig)] = (ProtocolChunkMode.SingleOnly, "JsonLines"),
+```
+
+Read the [properties](https://github.com/TheSmokeTeam/QaaS.Runner/blob/7c3af33b093b500b0dc7fdcd2cffe2bb7f60c8ba/QaaS.Runner.Sessions/Actions/Publishers/Builders/PublisherBuilderProperties.cs), [builder logic](https://github.com/TheSmokeTeam/QaaS.Runner/blob/7c3af33b093b500b0dc7fdcd2cffe2bb7f60c8ba/QaaS.Runner.Sessions/Actions/Publishers/Builders/PublisherBuilderLogic.cs), [validation](https://github.com/TheSmokeTeam/QaaS.Runner/blob/7c3af33b093b500b0dc7fdcd2cffe2bb7f60c8ba/QaaS.Runner.Sessions/Actions/Publishers/Builders/PublisherBuilderValidation.cs), and [chunk registry](https://github.com/TheSmokeTeam/QaaS.Runner/blob/7c3af33b093b500b0dc7fdcd2cffe2bb7f60c8ba/QaaS.Runner.Sessions/Actions/ProtocolChunkSupport.cs) together. Omitting `GetConfiguration` breaks update/validation; omitting `Reset` leaves conflicting configurations; omitting the registry causes an unsupported-protocol error before the sender factory is reached. The existing generic deep-clone path handles this scalar configuration; the laboratory checks that modifying the clone does not mutate its original.
+
+After those additions, a publisher fragment becomes:
+
+```yaml
+Publishers:
+  - Name: audit-orders
+    DataSourceNames: [orders]
+    JsonLines:
+      FilePath: artifacts/orders.ndjson
+    Serialize:
+      Serializer: Json
+```
+
+This goes inside an existing session with a real `orders` data source. `JsonLines` is a **new key introduced by the exercise** and will fail on an unmodified release. Do not add `Chunk`: this sender is singular-only. For repeated or parallel executions use distinct paths. C# construction uses the same config:
+
+```csharp
+var publisher = new PublisherBuilder()
+    .Named("audit-orders")
+    .AddDataSource("orders")
+    .Configure(new JsonLinesSenderConfig { FilePath = "artifacts/orders.ndjson" })
+    .WithSerializer(new SerializeConfig { Serializer = SerializationType.Json });
+```
+
+The current Runner also exposes [session action overrides](https://github.com/TheSmokeTeam/QaaS.Runner/blob/7c3af33b093b500b0dc7fdcd2cffe2bb7f60c8ba/QaaS.Runner.Sessions/RuntimeOverrides/SessionActionOverrides.cs) for embedding/testing. An override can substitute the runtime object for an already accepted action configuration; it does not by itself teach YAML binding, configuration selection, or chunk validation a new `JsonLines` option. Do not mistake that seam for reflection-based protocol registration.
+
+### 4. Decide whether Mocker actually needs a change
+
+This feature sends to a file; it needs **no Mocker server change**. Adding an unused Mocker branch would couple unrelated responsibilities. A new wire transport that Mocker must receive is a different feature: implement an `IServer`, add its configuration and `ServerType`, update `ServerConfig.ResolveType`/validation and the host builder selection, and add a branch to [ServerFactory](https://github.com/TheSmokeTeam/QaaS.Mocker/blob/0407e6b038b3ada1f48ed837bc6fd7b3022e0299/QaaS.Mocker.Servers/ServerFactory.cs). The existing source makes that separate selection boundary explicit:
+
+```csharp
+return server.ResolveType() switch
+{
+    ServerType.Http => new HttpServer(server.Http!, _context.Logger, transactionStubList),
+    ServerType.Grpc => new GrpcServer(server.Grpc!, _context.Logger, transactionStubList),
+    ServerType.Socket => new SocketServer(server.Socket!, _context.Logger, transactionStubList,
+        dataSourceList),
+    _ => throw new ArgumentException("Server type not supported!", nameof(server))
+};
+```
+
+That is an existing source excerpt, not a claim that adding one switch arm implements a server. A genuine new receiver also needs cancellation/shutdown, endpoint routing, request-to-stub conversion, response serialization, failure behavior and a client/server round-trip test. Use an existing transport plus a processor when only response behavior changes; the worked processor below demonstrates that route.
+
+### 5. What was actually verified?
+
+The included laboratory compiled the modified Framework and Runner.Sessions source and passed **19 executable checks**. These cover factory selection/rejection, sender lifecycle and malformed inputs, complete records under parallel sends, timestamp/body preservation, real Runner construction, conflict detection, chunk validation, configuration binding, cloning, update and reset. The test assembly uses the already-declared `QaaS.Runner.Sessions.Tests` friend-assembly name to exercise internal construction without making internals public.
+
+This is stronger than compiling an isolated interface implementation, but it is not an entire test-plan execution or a released NuGet consumer test. The proposed YAML fragment is checked against the same property names; the executable exercises its configuration tree via the real binder, not the YAML file loader. Upstream dependency/compiler warnings remain visible in the build. Before shipping: add the cases to the owning test suites, exercise a complete Runner session, verify generated schema/docs, pack the Framework change, and test Runner with that local package. Follow [the release guide](../04-devops/cicd-and-package-publishing.md). Mocker and hook consumers need compatible Framework versions when affected shared contracts change; this example introduces no wire DTO or hook-contract break.
+
+
+## Worked hook: simulate maintenance without changing a transport
+
+Suppose a client must handle planned maintenance: HTTP `503`, a deterministic JSON error, and a configurable `Retry-After` delay. That is response behavior behind an existing HTTP server, so implement a processor hook, not another protocol. The complete example below implements the actual [BaseTransactionProcessor contract](https://github.com/TheSmokeTeam/QaaS.Framework/blob/11f3ec66126cf878dc34c4fab8c152ced521f3ea/QaaS.Framework.SDK/Hooks/Processor/BaseTransactionProcessor.cs) and uses the SDK's [HTTP metadata fields](https://github.com/TheSmokeTeam/QaaS.Framework/blob/11f3ec66126cf878dc34c4fab8c152ced521f3ea/QaaS.Framework.SDK/Session/MetaDataObjects/Http.cs). It is a proposed hook to put in your own compatible `net10.0` hook library, not an already shipped QaaS class.
+
+```csharp
+using System.Collections.Immutable;
+using System.ComponentModel.DataAnnotations;
+using System.Globalization;
+using QaaS.Framework.SDK.DataSourceObjects;
+using QaaS.Framework.SDK.Hooks.Processor;
+using QaaS.Framework.SDK.Session.DataObjects;
+using QaaS.Framework.SDK.Session.MetaDataObjects;
+
+namespace Common.Shampoo;
+
+public sealed class MaintenanceConfiguration
+{
+    [Range(1, 86400)] public int RetryAfterSeconds { get; set; } = 30;
+    [Required] public string Message { get; set; } = "Planned maintenance";
+}
+
+public sealed record MaintenancePayload(string Code, string Message);
+
+public sealed class MaintenanceResponse : BaseTransactionProcessor<MaintenanceConfiguration>
+{
+    public override Data<object> Process(IImmutableList<DataSource> dataSources,
+        Data<object> requestData) => new()
+    {
+        Body = new MaintenancePayload("maintenance", Configuration.Message),
+        MetaData = new MetaData
+        {
+            Http = new Http
+            {
+                StatusCode = 503,
+                ResponseHeaders = new Dictionary<string, string>
+                {
+                    ["Retry-After"] = Configuration.RetryAfterSeconds.ToString(CultureInfo.InvariantCulture),
+                    ["Content-Type"] = "application/json; charset=utf-8"
+                }
+            }
+        }
+    };
+}
+```
+
+The method does not sleep. The header tells the client when to retry; delaying the mock response would test a different behavior. Each call creates its own metadata dictionary, preventing one request's headers from leaking into the next. Request data is left untouched. The base class binds and validates configuration before execution; the sample intentionally keeps a public parameterless constructor for the existing reflection path.
+
+Reference the hook package/library from the Mocker host, keep its SDK version compatible with that host, and add this **Mocker configuration fragment**. The names and nesting come from [TransactionStubBuilder](https://github.com/TheSmokeTeam/QaaS.Mocker/blob/0407e6b038b3ada1f48ed837bc6fd7b3022e0299/QaaS.Mocker.Stubs/ConfigurationObjects/TransactionStubBuilder.cs), [HttpServerConfig](https://github.com/TheSmokeTeam/QaaS.Mocker/blob/0407e6b038b3ada1f48ed837bc6fd7b3022e0299/QaaS.Mocker.Servers/ConfigurationObjects/HttpServerConfigs/HttpServerConfig.cs), and the checked-in [Mocker example](https://github.com/TheSmokeTeam/QaaS.Mocker/blob/0407e6b038b3ada1f48ed837bc6fd7b3022e0299/QaaS.Mocker.Example/mocker.qaas.yaml).
+
+```yaml
+Stubs:
+  - Name: maintenance
+    Processor: Common.Shampoo.MaintenanceResponse
+    ProcessorConfiguration:
+      RetryAfterSeconds: 30
+      Message: Planned maintenance
+    ResponseBodySerialization:
+      Serializer: Json
+Servers:
+  - Http:
+      Port: 8087
+      IsLocalhost: true
+      IsSecuredSchema: false
+      Endpoints:
+        - Path: /maintenance
+          Actions:
+            - Name: maintenance-get
+              Method: Get
+              TransactionStubName: maintenance
+```
+
+`ResponseBodySerialization` is essential here. [TransactionStub.Exercise](https://github.com/TheSmokeTeam/QaaS.Mocker/blob/0407e6b038b3ada1f48ed837bc6fd7b3022e0299/QaaS.Mocker.Stubs/Stubs/TransactionStub.cs) turns the record into bytes and preserves metadata; without a serializer this non-byte body is rejected. [The HTTP response writer](https://github.com/TheSmokeTeam/QaaS.Mocker/blob/0407e6b038b3ada1f48ed837bc6fd7b3022e0299/QaaS.Mocker.Servers/Extensions/HttpExtensions.cs) sets `StatusCode`, copies `ResponseHeaders`, and writes the bytes. Do not put the HTTP status inside the JSON body and expect it to set the transport status.
+
+A corresponding **Runner session fragment** probes this already running mock endpoint:
+
+```yaml
+Sessions:
+  - Name: maintenance-client
+    Transactions:
+      - Name: maintenance-call
+        TimeoutMs: 1000
+        SendEmptyRequest: true
+        Iterations: 1
+        OutputDeserialize:
+          Deserializer: Json
+        OutputDataFilter:
+          Body: true
+          MetaData: true
+          Timestamp: true
+        Http:
+          Method: Get
+          BaseAddress: http://localhost
+          Port: 8087
+          Route: /maintenance
+```
+
+These are fragments to merge into each host's existing valid configuration, not a deployment recipe. The consumer needs the version exposing [TransactionBuilder.SendEmptyRequest](https://github.com/TheSmokeTeam/QaaS.Runner/blob/7c3af33b093b500b0dc7fdcd2cffe2bb7f60c8ba/QaaS.Runner.Sessions/Actions/Transactions/Builders/TransactionBuilder.cs); it sends one bodyless HTTP GET per iteration, with no generator or input serializer. Add an assertion over the retained `maintenance-call` output that expects status `503`, header `Retry-After: 30`, and the JSON fields. The `HttpSuccess` assertion from the standards guide is intentionally the wrong assertion for this scenario: `503` is the expected behavior here.
+
+No Framework transport, Runner factory, or Mocker server change is required for this feature. It uses the existing HTTP path end to end. Also, do not mistake Runner's `Http.Retries` for application retry-on-503 logic: [HttpTransactorConfig](https://github.com/TheSmokeTeam/QaaS.Framework/blob/11f3ec66126cf878dc34c4fab8c152ced521f3ea/QaaS.Framework.Protocols/ConfigurationObjects/Http/HttpTransactorConfig.cs) and [HttpProtocol](https://github.com/TheSmokeTeam/QaaS.Framework/blob/11f3ec66126cf878dc34c4fab8c152ced521f3ea/QaaS.Framework.Protocols/Protocols/HttpProtocol.cs) retry transport failures/timeouts, not arbitrary HTTP statuses. To test your application's retry behavior, send requests through that application and let it call this mock dependency; the direct Runner request above only checks the mock's contract.
+
+## Compose policies before introducing a new policy type
+
+A bounded load experiment often needs both a message-count cap and an elapsed-time cap. Use two separate [PolicyBuilder](https://github.com/TheSmokeTeam/QaaS.Framework/blob/11f3ec66126cf878dc34c4fab8c152ced521f3ea/QaaS.Framework.Policies/PolicyBuilder.cs) instances:
+
+```csharp
+using QaaS.Framework.Policies;
+using QaaS.Framework.Policies.ConfigurationObjects;
+
+PolicyBuilder[] limits =
+[
+    new PolicyBuilder().Configure(new CountPolicyConfig { Count = 100 }),
+    new PolicyBuilder().Configure(new TimeoutPolicyConfig { TimeoutMs = 5000 })
+];
+var chain = PolicyBuilder.BuildPolicies(limits)
+    ?? throw new InvalidOperationException("No policies configured.");
+chain.SetupChain();
+// The owning action invokes chain.RunChain() at its policy checkpoint.
+```
+
+In YAML, the equivalent action-level fragment is:
+
+```yaml
+Policies:
+  - Count:
+      Count: 100
+  - Timeout:
+      TimeoutMs: 5000
+```
+
+`Configure` calls `Reset`, so configuring Count then Timeout on **one** builder leaves only Timeout. `BuildPolicies` builds and chains separate policies; `SetupChain` initializes their runtime state. [CountPolicy](https://github.com/TheSmokeTeam/QaaS.Framework/blob/11f3ec66126cf878dc34c4fab8c152ced521f3ea/QaaS.Framework.Policies/CountPolicy.cs) increments and stops on the Nth checkpoint. [Runner's transaction checkpoint](https://github.com/TheSmokeTeam/QaaS.Runner/blob/7c3af33b093b500b0dc7fdcd2cffe2bb7f60c8ba/QaaS.Runner.Sessions/Actions/Transactions/Transaction.cs) occurs after the operation and result logging. Therefore copying `while (chain.RunChain()) Send();` into your own loop changes the count boundary. Concurrent operations may already be in flight when one checkpoint stops the action; neither this composition nor an elapsed-time policy proves a hard global deadline on already started I/O. Set the transport's own timeout separately.
+
+Only introduce a new compiled policy when composition cannot express the requirement. Such a change needs a configuration implementing `IPolicyConfig`, a `Policy` implementation with tested setup/stop behavior and ordering, and updates to the builder's selection/reset/configuration/build paths. It is not discovered by dropping a hook DLL into the output directory.
+
+## Serialization: use an existing format explicitly
+
+For a new JSON response shape such as `MaintenancePayload`, add a DTO and select JSON; do not extend the serialization enum just because the JSON schema is new. This complete sequence uses the real [serializer factory](https://github.com/TheSmokeTeam/QaaS.Framework/blob/11f3ec66126cf878dc34c4fab8c152ced521f3ea/QaaS.Framework.Serialization/SerializerFactory.cs) and [deserializer factory](https://github.com/TheSmokeTeam/QaaS.Framework/blob/11f3ec66126cf878dc34c4fab8c152ced521f3ea/QaaS.Framework.Serialization/DeserializerFactory.cs):
+
+```csharp
+using Common.Shampoo;
+using QaaS.Framework.Serialization;
+
+var serializer = SerializerFactory.BuildSerializer(SerializationType.Json)
+    ?? throw new InvalidOperationException("JSON serializer unavailable.");
+var deserializer = DeserializerFactory.BuildDeserializer(SerializationType.Json)
+    ?? throw new InvalidOperationException("JSON deserializer unavailable.");
+var original = new MaintenancePayload("maintenance", "Try later");
+var bytes = serializer.Serialize(original)
+    ?? throw new InvalidOperationException("Expected a JSON payload.");
+var restored = (MaintenancePayload?)deserializer.Deserialize(bytes, typeof(MaintenancePayload));
+```
+
+Passing the target type requests a typed record; passing `null` requests the JSON implementation's `JsonNode` representation. Neither means a `Newtonsoft.Json.Linq.JToken`. The factories return `null` for a null format, and the JSON serializer/deserializer preserve null payloads; callers must choose whether absent data is valid. A genuinely new wire encoding needs enum/factory implementations and compatibility tests for both encode and decode, then updated consuming packages. It does not require another protocol when the existing transport already carries its byte representation.
+
+**Verification of these examples:** the scratch tests compiled the complete processor against the current SDK, exercised binding/validation and reflection creation, checked separate response dictionaries, and compiled the exact current `TransactionStub` and HTTP writer source into the test harness. They checked serialization to bytes, metadata preservation, rejection without serialization, and writing status `503`, `Retry-After`, content type, and body to an ASP.NET `DefaultHttpContext`. Policy tests covered separate-builder composition, reset-on-second-Configure, and zero-timeout behavior without sleeps. JSON tests covered typed/untyped decoding and null handling. These are focused code/contract checks, not a claim that both YAML fragments have run in a live Runner/Mocker deployment. Before shipping, add that host-level scenario and package-version/discovery verification.
 
 ## Which rules are enforced, and which rules must reviewers enforce?
 
