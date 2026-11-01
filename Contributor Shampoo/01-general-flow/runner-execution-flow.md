@@ -2,9 +2,11 @@
 
 This module follows a configuration from CLI bootstrap to disposed execution scopes. Allow **7 hours**, including the exercises. You should already have run a small QaaS scenario and written a small hook. The contributor's next job is to understand which component owns a behavior, when its inputs become available, and how failure changes the remaining work.
 
-The source links pin the workspace revisions used for this module: Runner `7c3af33b093b500b0dc7fdcd2cffe2bb7f60c8ba`, Framework `11f3ec66126cf878dc34c4fab8c152ced521f3ea`, and Mocker `0407e6b038b3ada1f48ed837bc6fd7b3022e0299`. Read the published [QaaS documentation](https://docs.qaas.online/) for customer-facing configuration and the [SDK overview](https://docs.qaas.online/framework/projects/sdk/) for hook and data contracts. When contributing against another revision, check these methods again; the links describe specific implementations, not promises about every release.
+Read the published [QaaS documentation](https://docs.qaas.online/) for customer-facing configuration and the [SDK overview](https://docs.qaas.online/framework/projects/sdk/) for hook and data contracts. For a deeper explanation of the feature implementations developed throughout this lifecycle, follow the [general-flow implementation guide](../examples/general-flow/README.md).
 
 ## Study route
+
+Follow the lifecycle in order, tracing one small configuration through each boundary before adding a new behavior.
 
 | Work | Time | Deliverable |
 |---|---:|---|
@@ -46,9 +48,9 @@ The phase order is explicit in [`ExecuteLifecycle`](https://github.com/TheSmokeT
 
 `Setup` and `Teardown` are protected virtual Runner extension points. They are distinct from YAML-configured SDK probes. Changing one changes runner-level orchestration; adding a probe adds a domain action to a session.
 
-### Customization example: embed Runner in a host that records duration
+### Hosting Runner and measuring its lifetime
 
-A useful platform feature is a CI worker that records total elapsed time while retaining QaaS's exit code and exception semantics. Use the existing public bootstrap and integer-returning entry point; avoid taking process-exit ownership through `Run()` inside a service:
+These lifetime boundaries matter when embedding Runner in a CI worker that records total elapsed time while retaining QaaS's exit code and exception semantics. Use the existing public bootstrap and integer-returning entry point; avoid taking process-exit ownership through `Run()` inside a service:
 
 ```csharp
 var stopwatch = System.Diagnostics.Stopwatch.StartNew();
@@ -70,6 +72,8 @@ For a product-wide preflight check, `Runner.Setup` is the protected virtual exte
 
 ## 2. Configuration loading: build a runtime model before running it
 
+Configuration loading turns user input into validated runtime objects and the context they share.
+
 [`RunLoader.BuildContext`](https://github.com/TheSmokeTeam/QaaS.Runner/blob/7c3af33b093b500b0dc7fdcd2cffe2bb7f60c8ba/QaaS.Runner/Loaders/RunLoader.cs) supplies the logger, execution identity, configuration file, running-session registry, overwrite inputs, case, reference options, and environment-resolution setting to `ContextBuilder`. The resulting `InternalContext` carries runtime-owned state as well as the effective configuration.
 
 Follow [`ContextBuilder.GetConfiguration`](https://github.com/TheSmokeTeam/QaaS.Framework/blob/11f3ec66126cf878dc34c4fab8c152ced521f3ea/QaaS.Framework.SDK/ContextObjects/ContextBuilder.cs) rather than treating YAML as a single deserialization call:
@@ -89,9 +93,9 @@ The builder disposes its scope when construction inside its protected `try` fail
 
 **Exercise — configuration trace.** Pick one existing working scenario. Find where one overridden value enters `RootConfiguration`, where its builder property is populated, and where the runtime object consumes it. Repeat with a case override and `ResolveCasesLast`. Produce a four-column table: input, resolved value, owning builder, runtime reader. Explain which validation belongs to generic configuration processing, the execution builder, and the hook itself. Do not change shared configuration-resolution code merely to make one scenario pass.
 
-### Customization example: deterministic order batches with validated configuration
+### Generating deterministic order batches
 
-Suppose a team wants predictable order IDs and bounded batches for regression replay. This is an external generator hook; it does not require a new Runner action or a Framework factory entry. The following code is the tested implementation. Put the declarations in a normal class library referencing the compatible `QaaS.Framework.SDK` package, and use the `ContributorExamples` namespace. The imports shown here also support the probe, assertion, and evidence helper later in this guide.
+Suppose a team wants predictable order IDs and bounded batches for regression replay. This is an external generator hook; it does not require a new Runner action or a Framework factory entry. The implementation below makes those constraints explicit in the configuration and generation logic. Put the declarations in a normal class library referencing the compatible `QaaS.Framework.SDK` package, and use the `ContributorExamples` namespace. The imports shown here also support the probe, assertion, and evidence helper later in this guide.
 
 ```csharp
 using System.Collections.Immutable;
@@ -175,7 +179,7 @@ The lower paths describe control traffic and application traffic separately. A h
 
 **Exercise — hook ownership.** Trace one small custom probe from its YAML type selector to `ProbeHook.Run`. Record which object owns its configuration, which context API it receives, and what data is available at invocation. Then trace a Mocker command without assuming the Runner owns the remote server lifetime. Explain where you would add a new domain hook versus where a transport change belongs.
 
-### Customization example: a diagnostic checkpoint probe
+### Observing evidence at a diagnostic checkpoint
 
 A useful probe can report what completed evidence is visible at an orchestration checkpoint without forcing lazy sources to generate data. Compile it in the same hook library as the generator:
 
@@ -217,6 +221,8 @@ If the desired feature is instead “switch a running Mocker to a fault response
 
 ## 4. Execution loop: distinguish three scheduling levels
 
+An execution plan chooses the phases to run; session and action scheduling decide how work overlaps within those phases.
+
 [`Execution.ExecutionPlans`](https://github.com/TheSmokeTeam/QaaS.Runner/blob/7c3af33b093b500b0dc7fdcd2cffe2bb7f60c8ba/QaaS.Runner/Execution.cs) is the authoritative pipeline table:
 
 | Execution type | Logic order | Normal result calculation |
@@ -252,7 +258,7 @@ Stage numbers order launch; this implementation permits overlap.
 
 **Exercise — scheduling experiment.** Instrument two harmless actions with start/end timestamps and use different action stages. Predict whether they overlap before running them. Then compare two sessions with immediate versus deferred result publication. Draw separate timelines for task lifetime, running registry visibility, and completed `SessionData` visibility. Propose a meaningful regression test for an ordering requirement; avoid using arbitrary sleeps as proof of a synchronization contract.
 
-### Customization example: enforce setup completion through session boundaries
+### Waiting for setup through session boundaries
 
 Suppose fixture preparation must complete before the checkout workload starts. Use separate **session** stages with normal immediate completion, rather than assuming action stages serialize work:
 
@@ -295,6 +301,8 @@ That excerpt is existing source, not an added barrier. An optional “await acti
 
 ## 5. Assertion evaluation: outcomes are computed from selected evidence
 
+Assertions turn retained evidence into an outcome, so data selection and missing-data behavior are part of the rule.
+
 [`AssertionLogic.Run`](https://github.com/TheSmokeTeam/QaaS.Runner/blob/7c3af33b093b500b0dc7fdcd2cffe2bb7f60c8ba/QaaS.Runner/Logics/AssertionLogic.cs) snapshots the session/source collections and evaluates assertions through `Parallel.ForEach`. Results are collected concurrently. Do not rely on configuration order as completion order. Immutable collection membership also does not make every payload and referenced object deeply immutable.
 
 [`Assertion.Execute`](https://github.com/TheSmokeTeam/QaaS.Runner/blob/7c3af33b093b500b0dc7fdcd2cffe2bb7f60c8ba/QaaS.Runner.Assertions/AssertionObjects/Assertion.cs) removes absent session results and applies configured selection. The hook evaluates the selected sessions and data sources. An explicit hook `AssertionStatus` takes precedence over the returned Boolean; otherwise true maps to Passed and false to Failed. An exception inside the hook invocation becomes Broken. Selection and preparation occur before that protected invocation, so this is not a catch-all guarantee for every error in assertion processing.
@@ -305,7 +313,7 @@ The result also records flakiness from selected sessions' action failures. That 
 
 **Exercise — outcome matrix.** Explain these separately: Boolean false; hook exception; explicit status with Boolean true; action failure with an assertion that still passes; no assertions. For each, identify the recorded status, metadata, and execution result from source. Extend a focused test around one meaningful boundary if making a contribution.
 
-### Customization example: fail when required completed evidence is missing
+### Rejecting missing or failed completed evidence
 
 A useful guard assertion should reject an empty selected-session collection and recorded setup/action failures rather than returning a vacuous pass. Add the following hook beside the generator:
 
@@ -377,7 +385,7 @@ flowchart LR
     RESTORE --> ASSERT
 ```
 
-### Customization example: a payload-free evidence summary
+### Summarizing evidence without logging payloads
 
 For debugging an unexpectedly empty report, count saved input/output messages per completed session without logging their potentially large bodies. This helper works over SDK evidence and can be called from an assertion or observational hook:
 
@@ -420,7 +428,7 @@ These are code-reading boundaries, not claims that a failure has been reproduced
 
 **Exercise — failure-path review.** Create an ownership table for Runner scope, execution scope, action, terminal capture, and remote Mocker service. For each, record creation, normal release, failure release, and whether the owner can outlive the current method. Select one failure injection—second builder fails, one execution disposal throws, or a publication step throws—and specify the expected remaining operations. Write the regression-test design before the fix. Do not assume disposing a local Mocker command stops the remote service.
 
-### Customization example: attempt every execution disposal and retain failures
+### Continuing cleanup after an execution disposal fails
 
 A concrete core improvement is to release later executions even if one execution throws during disposal. The current `DisposeExecutions` loop stops at the first exception. This is the proposed replacement **method body**, not shipped behavior:
 
@@ -441,6 +449,8 @@ The disposal-loop algorithm was compiled as a standalone `IEnumerable<IDisposabl
 
 ## Contributor completion check
 
-The worked generator, probe, assertion, summary, and disposal algorithm were compiled against the pinned Framework SDK and Providers projects with .NET 10. The focused executable harness passed **18 checks**, including actual provider discovery, configuration binding and validation, repeated/concurrent generator enumeration, evidence handling, and continued cleanup after exceptions. These checks do not claim a full Runner/Mocker integration run: the host wrapper and YAML/scheduling recipes were source-checked, and the disposal change remains a proposed core patch. Use those boundaries when deciding which tests a real contribution still needs.
+Complete the lifecycle study by explaining which behaviors have direct execution evidence and which still need integration coverage.
+
+The generator, probe, assertion, summary, and disposal algorithm shown in this guide were compiled against the pinned Framework SDK and Providers projects with .NET 10. The focused executable harness passed **18 checks**, including actual provider discovery, configuration binding and validation, repeated/concurrent generator enumeration, evidence handling, and continued cleanup after exceptions. These checks do not claim a full Runner/Mocker integration run: the host wrapper and YAML/scheduling recipes were source-checked, and the disposal change remains a proposed core patch. Use those boundaries when deciding which tests a real contribution still needs.
 
 Explain one scenario from configuration to report in ten minutes with the source open. Your explanation should distinguish build order from execution order, session stages from action stages, live data from completed evidence, assertion status from action failure, and session cleanup from Runner cleanup. Then propose one small contribution with an explicit owner, input/output contract, failure behavior, and regression case. If any claim relies only on a class name or an architecture diagram, follow its actual call site before including it in a PR.

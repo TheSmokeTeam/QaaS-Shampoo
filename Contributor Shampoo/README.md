@@ -38,12 +38,13 @@ QaaS-Contributors-Shampoo/
     ├── README.md
     ├── general-flow/
     ├── hooks-and-policies/
-    └── protocol-extension/
+    ├── protocol-extension/
+    └── delivery/
 ```
 
 ## Code examples and extension exercises
 
-Each guide now separates **existing source excerpts**, **new example implementations**, and **proposed integration changes**. Source links identify the exact revision; a proposed type or YAML key is never presented as an already shipped capability.
+Each guide explains its concepts through inline code and useful extension scenarios. Existing implementations and proposed additions are identified as you read, so you can follow the reasoning without mistaking an exercise for a shipped capability.
 
 | Module | Useful feature to explore |
 |---|---|
@@ -52,7 +53,7 @@ Each guide now separates **existing source excerpts**, **new example implementat
 | [Projects and extension boundaries](03-architecture/solution-and-project-structure.md) | A JSON-lines sender wired through Framework and Runner, a Mocker maintenance response with `Retry-After`, composed stop policies and explicit JSON serialization |
 | [CI/CD](04-devops/cicd-and-package-publishing.md) | Package-only consumer smoke checks, explicit stable-tag policy, mirror selection and source-driven documentation |
 
-The [reproducible example laboratories](examples/README.md) include the source and test projects: **18 general-flow checks, 35 hook/policy tests, and 19 protocol integration checks passed**. The protocol lab modifies disposable pinned source clones; it does not install a new feature into your existing QaaS repositories. The DevOps guide records its separate local package and tag-selection verification. Full deployment and unexecuted host-level scenarios remain explicitly identified in the relevant chapters. Choose one laboratory during the contributor rehearsal; running every lab in depth is optional practice beyond the standard schedule.
+The code examples appear beside the concepts they explain in each guide. For a slower, more detailed discussion of their decisions and failure cases, follow the [in-depth explanations](examples/README.md). That folder contains explanatory Markdown pages only; it is a reading companion rather than a collection of runnable projects.
 
 ## Eight-day study schedule
 

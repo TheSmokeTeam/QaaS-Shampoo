@@ -1,8 +1,12 @@
 # CI/CD and package publishing
 
+Delivery connects a reviewed source change to the packages and documentation that QaaS customers actually use. This module follows those boundaries and shows how to strengthen each one without confusing a successful build with a completed release.
+
 **Study time: 4 hours, including exercises.** Return to the [study schedule](../README.md). Read the [solution boundaries](../03-architecture/solution-and-project-structure.md) first: a Framework dependency change and a standalone hook change have different release consequences.
 
 Your goal is to trace a contribution from source to a tested package, a usable downstream dependency, and accurate published documentation. Completing this module does not require publishing a package, creating a tag, or dispatching a production workflow. The exercises use a disposable local checkout and feed.
+
+The code below belongs to the delivery steps it explains. For deeper reasoning about package provenance, release-channel choices, fallback behavior, and documentation ownership, follow the [delivery walkthrough](../examples/delivery/README.md).
 
 ## 1. Understand what CI actually guarantees
 
@@ -32,9 +36,9 @@ dotnet test .\QaaS.Framework.sln -c Release --no-build --no-restore
 
 Stop at a failed command and investigate it; do not continue to packaging and call the package verified. These commands are a local validation baseline, not a reproduction of the reporting, secrets, runner image, and artifact handling in Actions. Read CI logs to identify the first failing stage rather than treating every red run as a test failure.
 
-### Source example: build once, test that build
+### Build once and test the same artifacts
 
-These are the actual restore/build steps from [Framework CI, lines 79–83][framework-build-steps]:
+Separating restore, build, and test makes the inputs to each stage explicit. [Framework CI, lines 79–83][framework-build-steps] implements the first two boundaries like this:
 
 ```yaml
 - name: Restore packages
@@ -47,6 +51,8 @@ These are the actual restore/build steps from [Framework CI, lines 79–83][fram
 The later coverage command supplies both `--no-restore` and `--no-build`; its test inputs are therefore the artifacts from this build. A useful addition is **package-consumer verification on every pull request**: detect a package missing a public assembly, a wrong dependency version, or a behavior that only works through a project reference before a release tag exists. Section 3 gives a complete locally executed implementation. Keep it as a separate job with read-only permissions, so its temporary version and rebuild cannot replace binaries that the release job tested. No Runner or Mocker runtime edit is needed for this CI-only feature; add equivalent consumer behavior cases in those repositories when their packaged APIs change.
 
 ## 2. Follow the package and documentation chain
+
+A release crosses several independently validated boundaries: source CI creates packages, PackageMirror selects distribution inputs, and the documentation pipeline turns matching inputs into published guidance. Follow the arrows to identify which owner and artifact must be checked when a version appears in one place but not another.
 
 ```mermaid
 flowchart TD
@@ -82,9 +88,9 @@ In QaaS, review more than C# method signatures. Removing a hook name, changing a
 
 Before a maintainer releases, prepare a concrete handoff: intended version and rationale; exact source revision; successful validation; changed packages and dependent consumers; migration notes if needed; expected mirror and docs changes. Do not reuse the same local prerelease version after changing bytes: a cached package can hide the new implementation. Use distinct local versions such as `0.0.0-local.1`, then `0.0.0-local.2`.
 
-### Feature example: make stable-only publishing an explicit decision
+### Make stable-only publishing an explicit decision
 
-The [current detector][framework-tag-step] accepts any tag. If maintainers choose **stable-only publication**, replace that detector with the following Bash step. This is a proposed policy change, not existing QaaS behavior: it deliberately rejects `v1.2.3`, prereleases, and non-version tags. Agree on that policy before adopting it; a project that intentionally publishes alpha packages should use a separately defined prerelease channel instead.
+A release-channel rule belongs at the point where a tag becomes permission to publish. The [current detector][framework-tag-step] accepts any tag. If maintainers choose **stable-only publication**, replace that detector with the following Bash step. This is a proposed policy change, not existing QaaS behavior: it deliberately rejects `v1.2.3`, prereleases, and non-version tags. Agree on that policy before adopting it; a project that intentionally publishes alpha packages should use a separately defined prerelease channel instead.
 
 ```yaml
 - name: Detect stable release tag
@@ -141,9 +147,11 @@ Run the consumer's relevant behavior test using its documented command. Check `o
 
 `--source` supplies restore sources for this invocation, and `--packages` selects the package directory. If the lab needs a persistent feed entry, use `dotnet nuget add source` with an explicit lab-only `--configfile` rather than changing the contributor's global configuration. See [restore options](https://learn.microsoft.com/en-us/dotnet/core/tools/dotnet-restore), [adding a source](https://learn.microsoft.com/en-us/dotnet/core/tools/dotnet-nuget-add-source), and [local feed layouts](https://learn.microsoft.com/en-us/nuget/hosting-packages/local-feeds).
 
-### Feature implementation: a package-only consumer smoke check
+### Verify a package through an independent consumer
 
-The following new script is a complete proposed `tools/Test-PackageConsumer.ps1` for the Framework repository. It was executed against the [Infrastructure project][infrastructure-project] at the pinned current Framework revision. It builds a uniquely versioned package, restores an independent consumer through `PackageReference` only, verifies the exact version and local-feed provenance, then executes two deterministic cases against the **packaged** [date-time conversion implementation][date-conversion]. Both cases explicitly supply the daylight-saving flag, avoiding a dependence on the machine's time zone. The second case tests the method's standard-time offset rule even though its fixed sample date is in July; it is not a time-zone database test.
+An independent consumer checks what a customer receives: the package assets, dependency declarations, and public behavior. It must resolve the newly packed version rather than silently compile against the source project or an older cached package.
+
+The following new script is a complete proposed `tools/Test-PackageConsumer.ps1` for the Framework repository. It was executed against the [Infrastructure project][infrastructure-project] at the linked Framework revision. It builds a uniquely versioned package, restores an independent consumer through `PackageReference` only, verifies the exact version and local-feed provenance, then executes two deterministic cases against the **packaged** [date-time conversion implementation][date-conversion]. Both cases explicitly supply the daylight-saving flag, avoiding a dependence on the machine's time zone. The second case tests the method's standard-time offset rule even though its fixed sample date is in July; it is not a time-zone database test.
 
 Use a disposable Framework checkout: `pack` rebuilds its Infrastructure project. The lab root must not already exist, preventing stale packages or consumer files from being reused. The script writes only local build/lab output and never publishes a package or changes the user's NuGet sources. It requires .NET 10 and access to the declared external dependency feed.
 
@@ -257,9 +265,9 @@ Family schemas are assembled from mirrored packages, not merely handwritten YAML
 
 The schema is the configuration validation/editor artifact; the two accompanying contracts support configuration-section and hook documentation generation. A hook or configuration change can therefore require package, schema, and documentation validation even when its implementation is small. Read the [mirror schema contract][mirror-readme] before editing generated output.
 
-### Feature example: keep one source family on the stable channel
+### Keep one source family on the stable channel
 
-Suppose production users want Framework mirror inputs restricted to stable tags while allowing Runner previews. The actual [tracked-repository table][mirror-tracked] currently passes `true` for each repository's `AllowPrerelease`. The smallest selection change is this **replacement entry** in `SyncRestoredPackagesCommand.TrackedRepositories`:
+Mirror selection has its own release-channel policy, separate from the source repository's publication gate. Suppose production users want Framework mirror inputs restricted to stable tags while allowing Runner previews. The actual [tracked-repository table][mirror-tracked] currently passes `true` for each repository's `AllowPrerelease`. The smallest selection change is this **replacement entry** in `SyncRestoredPackagesCommand.TrackedRepositories`:
 
 ```csharp
 new("TheSmokeTeam/QaaS.Framework", "CI", false, "restored-packages-artifact"),
@@ -317,7 +325,7 @@ Publication belongs to [qaas-docs CI][docs-ci]. It initializes the generator sub
 
 Offline documentation has a separate ownership boundary: docs tag CI builds and validates the ZIM artifact; PackageMirror obtains the existing ZIM and republishes its bytes in a mirror release. The mirror does not build the ZIM itself. Missing or ambiguous ZIM inputs can block a mirror release despite passing package tests. Docker image publication in docs CI is another conditional path, with tag/manual-dispatch and credential checks; a green docs build alone does not establish that an image was pushed.
 
-### Feature example: make a new fluent API discoverable in generated docs
+### Make a new fluent API discoverable in generated docs
 
 Adding a useful method is only half of making it usable. A new serializer-related builder method should carry the same documentation-placement convention as [the real `WithSerializer` method][builder-doc-example]. The following is an existing implementation excerpt, with its longer remarks omitted:
 
@@ -337,13 +345,17 @@ For a new method, write a precise summary, parameter/return contracts, and the p
 
 The useful CI enhancement is to reject documentation drift with the existing `generate-reference-docs --check --build-site` command, after checking out the matching source tags and mirror inputs. The [mirror's generation step][mirror-docs-step] shows the complete root arguments and adds `--check` for drift-only runs. Keep those roots explicit when a job uses a different layout. This is a proposal for applying an existing check to a contribution, not a claim that every source PR currently runs that check. A complete trial must inspect the generated page, its source method link, and a valid/invalid configuration example; compiling the method or parsing this XML comment alone does not prove the rendered site is correct.
 
-### Verification of the worked changes
+### Distinguish local verification from release readiness
+
+Each validation result covers a particular boundary. A local package test can establish that its consumer works; it cannot establish that an undeployed Actions job, a complete mirror synchronization, or the published documentation will succeed.
 
 The package-consumer script above was run with .NET SDK `10.0.203` against Framework commit `11f3ec6`: package creation, isolated restore, exact-version/provenance checks, and both executable conversion assertions passed. The stable-tag detector was extracted from its YAML and executed with Git Bash against all six listed cases; all expected exit codes and outputs matched. All three YAML code blocks parsed successfully. PackageMirror's existing six tag-classification tests passed against commit `9da0f21`, with none skipped.
 
 The new Actions job and the stable-only policies are **proposed contributions**, not deployed repository changes. No release, push, workflow dispatch, complete mirror sync, or full documentation regeneration was performed for these examples. The documentation-placement example was checked against its actual source method and generator contract. These boundaries matter: local execution validates the package-smoke implementation, while the full release and docs integration still needs the checks described above in the contributor's own change.
 
 ## 6. Four-hour contributor lab
+
+Use the lab to practice tracing delivery evidence across owners. The exercises build from reading CI to consuming a package, following mirror selection, and checking documentation inputs; each produces a concrete reviewer handoff.
 
 | Time | Exercise | Evidence to hand to a reviewer |
 | --- | --- | --- |
@@ -356,11 +368,13 @@ Timebox dependency setup during the lab. If a feed or integration service is una
 
 ### Self-check
 
+Use these questions to check whether you can explain the boundaries without relying on a green status badge. Return to the relevant section when you cannot identify the artifact, owner, or check that supports your answer.
+
 Can you explain why a green build is not proof of a correct NuGet dependency graph? Can you identify the source version behind a mirrored package and a generated docs page? Can you distinguish the name `stable_tag` from its actual predicate? Can you name the owner of ZIM generation? Can you propose a compatible version increment and identify downstream consumers without publishing anything? If any answer is unclear, revisit the corresponding source boundary above.
 
 ## Source map
 
-The following links pin the inspected workspace revisions so readers can reproduce the claims. When contributing against a newer revision, compare these files with that revision before acting. User-facing documentation links use the published site; repository links below are implementation evidence.
+Use these implementation references to trace the build, packaging, mirror, and documentation boundaries. Customer-facing guidance lives at [docs.qaas.online](https://docs.qaas.online/); compare the linked implementation with the version you are changing before applying a proposed contribution.
 
 - [Runner workflow][runner-ci]: build, tests, coverage, package publication, and restore artifact.
 - [Framework workflow][framework-ci], [SDK project][sdk-project], and [shared build properties][framework-props]: build settings and package behavior.

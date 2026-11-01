@@ -1,31 +1,20 @@
-# Reproduce the examples
+# In-depth explanations
 
-The examples use **real, pinned QaaS source**. Install Git and .NET 10; the protocol laboratory also needs Python 3. Keep these files inside the downloaded Shampoo directory structure. No credentials, package publication, or running broker is required. NuGet access is needed for dependencies.
+These walkthroughs explain why the examples in the main chapters work, where their guarantees end, and how to reason about extending them. Each category starts with the central idea, then traces the decisions and failure paths in detail.
 
-From this `examples` directory, create fresh source clones outside your working repositories:
+## Choose a walkthrough
 
-```powershell
-$exampleSources = Join-Path $env:TEMP ("qaas-hook-examples-" + [guid]::NewGuid().ToString("N"))
-git clone https://github.com/TheSmokeTeam/QaaS.Framework.git "$exampleSources/QaaS.Framework"
-git -C "$exampleSources/QaaS.Framework" checkout --detach 11f3ec66126cf878dc34c4fab8c152ced521f3ea
-git clone https://github.com/TheSmokeTeam/QaaS.Mocker.git "$exampleSources/QaaS.Mocker"
-git -C "$exampleSources/QaaS.Mocker" checkout --detach 0407e6b038b3ada1f48ed837bc6fd7b3022e0299
-dotnet run --project general-flow/FlowExamples.csproj "--property:ExampleSources=$exampleSources"
-dotnet test hooks-and-policies/StandardsExample.csproj "--property:ExampleSources=$exampleSources"
-```
+Follow the topic you are currently studying. The implementation snippets remain beside their explanations in the main chapters; these pages provide a slower investigation of the same behavior.
 
-Stop if a clone, checkout or build fails. Do not claim verification from a command you have not run. The property points to the **parent directory** of the source repositories, not an individual project.
-
-| Laboratory | Behavior covered | Verified result |
+| Walkthrough | What it explains | Main chapter |
 |---|---|---|
-| [General flow](general-flow/Program.cs) and [implementations](general-flow/Examples.cs) | Real generator discovery/context injection, binding, deterministic/concurrent enumeration, snapshot probe, completed-session assertion, payload-free summary, cleanup aggregation | 18 checks passed |
-| [Hooks and policies](hooks-and-policies/StandardsExample.csproj) | HTTP-success assertion, real binding and reflection, context aliasing/isolation, maintenance processor, real stub serialization and HTTP response writer, policy composition, JSON codec | 35 NUnit cases passed |
-| [New protocol](protocol-extension/README.md) | Modified Framework sender factory and real Runner builder integration, including chunk validation, cloning, update/reset and parallel file writes | 19 checks passed |
+| [General flow](general-flow/README.md) | Configuration, generated data, ordering, assertions and cleanup as one execution story | [Runner execution flow](../01-general-flow/runner-execution-flow.md) |
+| [Hooks and policies](hooks-and-policies/README.md) | Discovery, configurable assertions, response processing and stop conditions | [Conventions and guidelines](../02-standards/conventions-and-guidelines.md) |
+| [Protocol extensions](protocol-extension/README.md) | The complete ownership and lifecycle reasoning behind a JSON-lines sender | [Solution and project structure](../03-architecture/solution-and-project-structure.md) |
+| [Delivery](delivery/README.md) | Package-consumer evidence, release selection, mirror inputs and generated documentation | [CI/CD and package publishing](../04-devops/cicd-and-package-publishing.md) |
 
-The hooks project links the pinned Mocker `TransactionStub`, HTTP extension and HTTP-method sources and supplies the ASP.NET framework reference; it does not fake those implementations. Its writer test uses `DefaultHttpContext`, not a listening network server. The protocol laboratory has separate preparation commands because it intentionally modifies **disposable clones** to demonstrate the new protocol registration.
+## Read from behavior to evidence
 
-These results were obtained with SDK 10.0.203. The restored upstream dependency graph produced existing NuGet advisory warnings; those warnings are not fixed by the examples. Focused passing tests do not establish whole-solution correctness, live Runner/Mocker deployment, package release compatibility, or production readiness. Each chapter states which host-level checks remain necessary.
+Begin with the main chapter's behavior and inline code, then use its companion to examine the tradeoffs. Finish by returning to the linked implementation and checking which assertion or failure case supports each guarantee.
 
-The [DevOps guide](../04-devops/cicd-and-package-publishing.md) additionally includes the complete locally executed package-consumer smoke script, tested release-tag selection, and the focused PackageMirror command. Those examples do not deploy GitHub Actions or publish packages.
-
-Return to the [study route](../README.md).
+The folder contains explanatory Markdown only. Proposed features are identified in the main chapters, alongside the current source they would extend; the walkthroughs do not imply that those features are already shipped. Return to the [study plan](../README.md) to continue the full sequence.

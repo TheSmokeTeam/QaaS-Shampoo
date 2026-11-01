@@ -1,5 +1,7 @@
 # Solution and project structure
 
+This chapter explains where QaaS behavior belongs and how a change crosses project boundaries. Follow the sender and maintenance-response examples as concrete applications of those boundaries.
+
 Budget **4 hours**, including the exercises. Start after [conventions and guidelines](../02-standards/conventions-and-guidelines.md), then continue to the [Runner lifecycle](../01-general-flow/runner-execution-flow.md); return to the [study plan](../README.md) whenever you need the wider sequence. Your deliverable is an annotated dependency map and a short placement decision for a proposed contribution.
 
 ## Read names at the right level
@@ -21,6 +23,8 @@ The [live documentation](https://docs.qaas.online/) supplies the customer view: 
 | `.Tests` | Companion verification projects, commonly NUnit with Moq where needed | Behavioral regression tests at the owning boundary | Every project containing “Tests” is a unit-test assembly; Runner.E2ETests is an executable harness |
 
 ## The Framework is several layers, not one core assembly
+
+Framework divides reusable capabilities into separately compiled projects. This limits which parts of the ecosystem a change must depend on.
 
 Arrows below mean **the project at the tail directly references the project at the head**. They do not mean runtime call order. This graph includes all direct production `ProjectReference` edges in the Framework solution; package dependencies are discussed separately.
 
@@ -58,6 +62,8 @@ Read the [SDK project][sdk-project], [Executions project][executions-project], a
 
 ## Runner ownership and dependency direction
 
+Runner composes actions, assertions and storage while keeping their implementation in separate projects. A transport change reaches its session builders; a new domain hook usually does not.
+
 ```mermaid
 flowchart TD
   R[Runner] --> A[Runner.Assertions]
@@ -78,6 +84,8 @@ Evidence: [Runner composition][runner-project], [Runner.Infrastructure][runner-i
 
 ## Mocker ownership and dependency direction
 
+Mocker separates hosting, response processing and runtime control. Choose the layer that owns the new behavior before adding dependencies.
+
 ```mermaid
 flowchart TD
   M[Mocker] --> C[Mocker.Controller]
@@ -96,7 +104,9 @@ A contributor adding a protocol-specific server should first determine whether t
 
 Evidence: [Mocker project][mocker-project], [Controller project][controller-project], [Servers project][servers-project], [Stubs project][stubs-project], and [Mocker solution][mocker-solution].
 
-## The probe example: contract, scheduling and implementation
+## Probe contracts, scheduling and implementation
+
+A probe spans three responsibilities: an SDK contract, Runner scheduling and the hook’s actual operation. Keeping those responsibilities separate lets a new operation reuse the existing execution machinery.
 
 Trace this separation before adding a new probe:
 
@@ -107,11 +117,11 @@ Trace this separation before adding a new probe:
 
 This is why a new reusable probe normally need not modify Runner. A missing protocol implementation or an incompatible SDK contract is different: it changes a shared dependency and may require coordinated downstream package updates. Use the [publishing chapter](../04-devops/cicd-and-package-publishing.md) before treating a local build as proof that separately versioned consumers work.
 
-## Worked extension: a JSON-lines diagnostic sender
+## Extending a protocol through Framework and Runner
 
-**Feature:** capture generated messages in a local `.ndjson` file for inspecting a bounded test fixture without a broker. This is a proposed addition, not a protocol that current QaaS already ships. The complete [sender implementation](../examples/protocol-extension/JsonLinesSender.cs), [source-edit script](../examples/protocol-extension/prepare.py), and [executable verification](../examples/protocol-extension/Program.cs) are included in this pack. Follow the [laboratory instructions](../examples/protocol-extension/README.md) to reproduce it in disposable source clones.
+A new sender must connect transport behavior to configuration, construction and validation. A JSON-lines file sink makes those responsibilities visible without needing a broker.
 
-The new example baseline is Framework `11f3ec66126cf878dc34c4fab8c152ced521f3ea` and Runner `7c3af33b093b500b0dc7fdcd2cffe2bb7f60c8ba`. Earlier diagrams retain their explicitly pinned inventory baseline below. Compare a later checkout before applying edits.
+Suppose a team needs to inspect generated messages in a local `.ndjson` file during a bounded test. The implementation below adds that capability through the real sender contract and Runner selection paths. It is a proposed extension, not an already shipped protocol. The [detailed sender walkthrough](../examples/protocol-extension/README.md) explains the design decisions, failure paths and test boundaries behind each step.
 
 ### 1. Choose the contract before choosing the class name
 
@@ -131,42 +141,86 @@ For a file sink, implement `ISender`, not `ITransactionProcessor`: no response i
 
 ### 2. Add the configuration and implementation in Framework.Protocols
 
-The teaching configuration introduces one property:
+The configuration selects the destination; the sender owns lifecycle, JSON framing and writes. Reading the complete class together shows which state belongs to one publisher instance.
+
+The implementation uses the normal .NET implicit framework imports alongside these QaaS imports:
 
 ```csharp
+using System.ComponentModel;
+using System.ComponentModel.DataAnnotations;
+using System.Text;
+using System.Text.Json;
+using QaaS.Framework.Protocols.ConfigurationObjects;
+using QaaS.Framework.Protocols.Protocols;
+using QaaS.Framework.SDK.Session.DataObjects;
+using QaaS.Framework.Serialization;
+
+namespace QaaS.Framework.Protocols.Examples;
+
 public sealed record JsonLinesSenderConfig : ISenderConfig
 {
     [Required, Description("Local file to append one compact JSON document per line.")]
     public string FilePath { get; set; } = "";
 }
-```
 
-The sender constructor also rejects blank paths so direct C# callers do not bypass the invariant. The full class imports and lifecycle are in [JsonLinesSender.cs](../examples/protocol-extension/JsonLinesSender.cs). Its critical method is:
-
-```csharp
-public DetailedData<object> Send(Data<object> data)
+// Teaching extension, not a protocol shipped by QaaS.
+// Use a different file per publisher instance/execution.
+public sealed class JsonLinesSender : ISender
 {
-    ArgumentNullException.ThrowIfNull(data);
-    lock (_gate)
-    {
-        if (!_connected)
-            throw new InvalidOperationException("Connect before sending.");
-        if (data.Body is not byte[] bytes)
-            throw new ArgumentException("Configure Serialize.Serializer: Json to produce bytes.", nameof(data));
+    private readonly string _path;
+    private readonly object _gate = new();
+    private bool _connected;
 
-        using var document = JsonDocument.Parse(bytes);
-        var line = JsonSerializer.Serialize(document.RootElement);
-        // Open/close on each send: no stream survives a failed action.
-        File.AppendAllText(_path, line + "\n", new UTF8Encoding(false));
-        return new DetailedData<object>
+    public JsonLinesSender(JsonLinesSenderConfig config)
+    {
+        ArgumentNullException.ThrowIfNull(config);
+        ArgumentException.ThrowIfNullOrWhiteSpace(config.FilePath);
+        _path = Path.GetFullPath(config.FilePath);
+    }
+
+    public SerializationType? GetSerializationType() => SerializationType.Json;
+
+    public void Connect()
+    {
+        lock (_gate)
         {
-            Body = bytes,
-            MetaData = data.MetaData,
-            Timestamp = DateTime.UtcNow
-        };
+            Directory.CreateDirectory(Path.GetDirectoryName(_path)!);
+            _connected = true;
+        }
+    }
+
+    public DetailedData<object> Send(Data<object> data)
+    {
+        ArgumentNullException.ThrowIfNull(data);
+        lock (_gate)
+        {
+            if (!_connected)
+                throw new InvalidOperationException("Connect before sending.");
+            if (data.Body is not byte[] bytes)
+                throw new ArgumentException("Configure Serialize.Serializer: Json to produce bytes.", nameof(data));
+
+            using var document = JsonDocument.Parse(bytes);
+            var line = JsonSerializer.Serialize(document.RootElement);
+            // Open/close on each send: no stream survives a failed action.
+            File.AppendAllText(_path, line + "\n", new UTF8Encoding(false));
+            return new DetailedData<object>
+            {
+                Body = bytes,
+                MetaData = data.MetaData,
+                Timestamp = DateTime.UtcNow
+            };
+        }
+    }
+
+    public void Disconnect()
+    {
+        lock (_gate)
+            _connected = false;
     }
 }
 ```
+
+The sender constructor rejects a blank path even when a C# caller bypasses configuration validation. `Connect` prepares the directory, and `Disconnect` prevents subsequent sends; neither retains a stream between operations.
 
 The per-instance lock prevents two parallel calls from interleaving a record. Parsing and re-serializing guarantees a compact single-line JSON document even if the input was pretty-printed. The timestamp is assigned only after the write succeeds. Input metadata is preserved. A file error propagates; it is not converted into a false “sent” result. Each write closes its handle so a later failed Runner action cannot strand a stream owned by this example. Distinct publisher instances must use distinct files: the lock is not cross-process coordination. Rotation, disk quotas, fsync guarantees and crash-atomic writes would be separate features with separate failure tests.
 
@@ -180,7 +234,7 @@ Add this arm to `SenderFactory.CreateSender`'s existing type switch; keep the ex
 JsonLinesSenderConfig config => new JsonLinesSender(config),
 ```
 
-Use the namespace `QaaS.Framework.Protocols.Examples` from the supplied file. In a production contribution choose the owning namespace/folder convention and provide XML documentation. The example's preparation script uses fully qualified names to make the insertion unambiguous.
+Use the namespace `QaaS.Framework.Protocols.Examples` from the complete implementation above. In a production contribution choose the owning namespace/folder convention and provide XML documentation. The following insertion excerpts assume that namespace is imported in each edited file.
 
 Runner must be able to bind, select, update, clone and validate the new option. These are insertion excerpts, not complete replacements for the original methods:
 
@@ -208,7 +262,7 @@ JsonLines,
 [typeof(JsonLinesSenderConfig)] = (ProtocolChunkMode.SingleOnly, "JsonLines"),
 ```
 
-Read the [properties](https://github.com/TheSmokeTeam/QaaS.Runner/blob/7c3af33b093b500b0dc7fdcd2cffe2bb7f60c8ba/QaaS.Runner.Sessions/Actions/Publishers/Builders/PublisherBuilderProperties.cs), [builder logic](https://github.com/TheSmokeTeam/QaaS.Runner/blob/7c3af33b093b500b0dc7fdcd2cffe2bb7f60c8ba/QaaS.Runner.Sessions/Actions/Publishers/Builders/PublisherBuilderLogic.cs), [validation](https://github.com/TheSmokeTeam/QaaS.Runner/blob/7c3af33b093b500b0dc7fdcd2cffe2bb7f60c8ba/QaaS.Runner.Sessions/Actions/Publishers/Builders/PublisherBuilderValidation.cs), and [chunk registry](https://github.com/TheSmokeTeam/QaaS.Runner/blob/7c3af33b093b500b0dc7fdcd2cffe2bb7f60c8ba/QaaS.Runner.Sessions/Actions/ProtocolChunkSupport.cs) together. Omitting `GetConfiguration` breaks update/validation; omitting `Reset` leaves conflicting configurations; omitting the registry causes an unsupported-protocol error before the sender factory is reached. The existing generic deep-clone path handles this scalar configuration; the laboratory checks that modifying the clone does not mutate its original.
+Read the [properties](https://github.com/TheSmokeTeam/QaaS.Runner/blob/7c3af33b093b500b0dc7fdcd2cffe2bb7f60c8ba/QaaS.Runner.Sessions/Actions/Publishers/Builders/PublisherBuilderProperties.cs), [builder logic](https://github.com/TheSmokeTeam/QaaS.Runner/blob/7c3af33b093b500b0dc7fdcd2cffe2bb7f60c8ba/QaaS.Runner.Sessions/Actions/Publishers/Builders/PublisherBuilderLogic.cs), [validation](https://github.com/TheSmokeTeam/QaaS.Runner/blob/7c3af33b093b500b0dc7fdcd2cffe2bb7f60c8ba/QaaS.Runner.Sessions/Actions/Publishers/Builders/PublisherBuilderValidation.cs), and [chunk registry](https://github.com/TheSmokeTeam/QaaS.Runner/blob/7c3af33b093b500b0dc7fdcd2cffe2bb7f60c8ba/QaaS.Runner.Sessions/Actions/ProtocolChunkSupport.cs) together. Omitting `GetConfiguration` breaks update/validation; omitting `Reset` leaves conflicting configurations; omitting the registry causes an unsupported-protocol error before the sender factory is reached. The existing generic deep-clone path handles this scalar configuration; a clone-isolation check confirms that modifying the copy does not mutate its original.
 
 After those additions, a publisher fragment becomes:
 
@@ -253,12 +307,12 @@ That is an existing source excerpt, not a claim that adding one switch arm imple
 
 ### 5. What was actually verified?
 
-The included laboratory compiled the modified Framework and Runner.Sessions source and passed **19 executable checks**. These cover factory selection/rejection, sender lifecycle and malformed inputs, complete records under parallel sends, timestamp/body preservation, real Runner construction, conflict detection, chunk validation, configuration binding, cloning, update and reset. The test assembly uses the already-declared `QaaS.Runner.Sessions.Tests` friend-assembly name to exercise internal construction without making internals public.
+Verification of this implementation compiled the modified Framework and Runner.Sessions source and passed **19 executable checks**. These cover factory selection/rejection, sender lifecycle and malformed inputs, complete records under parallel sends, timestamp/body preservation, real Runner construction, conflict detection, chunk validation, configuration binding, cloning, update and reset. The test assembly uses the already-declared `QaaS.Runner.Sessions.Tests` friend-assembly name to exercise internal construction without making internals public.
 
 This is stronger than compiling an isolated interface implementation, but it is not an entire test-plan execution or a released NuGet consumer test. The proposed YAML fragment is checked against the same property names; the executable exercises its configuration tree via the real binder, not the YAML file loader. Upstream dependency/compiler warnings remain visible in the build. Before shipping: add the cases to the owning test suites, exercise a complete Runner session, verify generated schema/docs, pack the Framework change, and test Runner with that local package. Follow [the release guide](../04-devops/cicd-and-package-publishing.md). Mocker and hook consumers need compatible Framework versions when affected shared contracts change; this example introduces no wire DTO or hook-contract break.
 
 
-## Worked hook: simulate maintenance without changing a transport
+## Changing Mocker responses through a processor
 
 Suppose a client must handle planned maintenance: HTTP `503`, a deterministic JSON error, and a configurable `Retry-After` delay. That is response behavior behind an existing HTTP server, so implement a processor hook, not another protocol. The complete example below implements the actual [BaseTransactionProcessor contract](https://github.com/TheSmokeTeam/QaaS.Framework/blob/11f3ec66126cf878dc34c4fab8c152ced521f3ea/QaaS.Framework.SDK/Hooks/Processor/BaseTransactionProcessor.cs) and uses the SDK's [HTTP metadata fields](https://github.com/TheSmokeTeam/QaaS.Framework/blob/11f3ec66126cf878dc34c4fab8c152ced521f3ea/QaaS.Framework.SDK/Session/MetaDataObjects/Http.cs). It is a proposed hook to put in your own compatible `net10.0` hook library, not an already shipped QaaS class.
 
@@ -439,6 +493,8 @@ The boundary is not always one test assembly to one production assembly. Runner.
 `QaaS.Runner.E2ETests` is listed in the [Runner solution][runner-solution]. Its [project file][e2e-project] declares `OutputType=Exe`, references all five production projects, and copies YAML/case/config/variable assets to output. It is not configured there as a standard NUnit test project. Therefore, a successful `dotnet test` does not by itself prove that its executable scenarios ran. Consult the harness entry point and its documented invocation before claiming end-to-end coverage.
 
 ## Practice: build an evidence-backed contribution plan
+
+Use the ownership rules to turn a feature idea into a change another contributor can review. The result should identify both the implementation boundary and the evidence needed to trust it.
 
 Allow **240 minutes total**. These are study and review exercises; no service deployment or package publishing is required.
 

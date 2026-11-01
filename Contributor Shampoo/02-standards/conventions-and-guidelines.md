@@ -1,10 +1,16 @@
 # Conventions and guidelines
 
+This guide explains how to make a QaaS contribution understandable, testable, and consistent with the repository that owns it.
+
 [Pack index](../README.md) · [Project boundaries](../03-architecture/solution-and-project-structure.md)
 
 Allow **6 hours** for setup, selected reading, and the exercises. This guide sets the contribution standard for this study pack. A repository's checked-in instructions and maintainer decisions take precedence. Branch prefixes, commit conventions, and the PR checklist below are the pack's required practice; they are not a claim that every QaaS repository already enforces those rules automatically.
 
+For an extended explanation of hook contracts, configuration boundaries, and policy composition, follow the [hooks and policies implementation guide](../examples/hooks-and-policies/README.md). The code and tests below introduce those decisions where they matter in the contribution workflow.
+
 ## 1. Set up a reproducible working environment
+
+A reproducible environment lets reviewers run the same build and diagnose the same failures as the contributor.
 
 Install Git, a C# IDE with debugger support, and the .NET SDK required by the project you will change. Read `global.json` if present, the solution's project files, `Directory.Build.props`, `NuGet.config`, and its CI workflow before choosing SDK or tool versions. The inspected [Framework SDK project](https://github.com/TheSmokeTeam/QaaS.Framework/blob/4d4b192391418c7882990323f2690d0649a20465/QaaS.Framework.SDK/QaaS.Framework.SDK.csproj) and [Runner project](https://github.com/TheSmokeTeam/QaaS.Runner/blob/8ccd6f53f9d23645ee117eef48ea3d56f24acfd0/QaaS.Runner/QaaS.Runner.csproj) target `net10.0`; do not install an old .NET Core SDK merely because a tutorial uses that name. Nullable reference checking is enabled in both. Check those files again on your contribution branch.
 
@@ -23,6 +29,8 @@ Use the corresponding real solution name in another repository. Record SDK versi
 Use local tool manifests where provided. The Framework contributor instructions call for `csharpier format <changed-files>`; install the maintainer-approved CSharpier version if your checkout has no tool manifest, and format only your changed files. Do not reformat an entire solution as a side effect of a small fix. See the [CSharpier installation guide](https://csharpier.com/docs/Installation) and [format command](https://csharpier.com/docs/CLI).
 
 ## 2. Required AI-assisted tooling
+
+Use the QaaS developer tooling to locate ownership and check assumptions before changing a contract.
 
 Install and use the official QaaS developer plugin from [TheSmokeTeam/qaas-dev-claude-plugins](https://github.com/TheSmokeTeam/qaas-dev-claude-plugins). Run these commands **inside Claude Code**, not in a shell:
 
@@ -97,9 +105,9 @@ These are design questions, not a demand to refactor every older abstraction. A 
 
 ## 5. Required design-pattern vocabulary
 
-The example immediately below turns the design principles into one concrete contribution. New examples in this guide were checked against Framework commit `11f3ec66126cf878dc34c4fab8c152ced521f3ea` and Runner commit `7c3af33b093b500b0dc7fdcd2cffe2bb7f60c8ba`; older links elsewhere preserve the original learning baseline.
+Design patterns name recurring responsibilities and boundaries; use them to explain why a QaaS extension belongs where it does. An HTTP response assertion makes these ideas concrete: its domain rule can change while Runner keeps control of discovery, execution, and reporting.
 
-### Worked feature: accept any HTTP success status, but reject an empty result
+### HTTP success assertions and meaningful evidence
 
 An endpoint may return `200`, `201`, or `204` legitimately. A useful assertion checks that **all retained responses are 2xx and at least a configured number arrived**. The count condition prevents an empty output from passing vacuously. This is a domain rule, so implement an external assertion hook; do not add HTTP-specific conditionals to Runner's assertion loop or change Mocker's server implementation.
 
@@ -191,7 +199,7 @@ Read each linked pattern's intent and structure, then use the question in the fi
 
 Exercise: choose Builder, Strategy, and Chain of Responsibility. Draw the participating QaaS types, label who calls whom, and identify one limitation of each analogy. Then explain why using a Singleton merely to avoid passing dependencies would be a poor reason to introduce shared state.
 
-For the worked feature, **Strategy** describes replacing the assertion algorithm while Runner keeps the execution contract. **Adapter** describes the existing transport code translating an HTTP response into QaaS metadata; the new assertion consumes that representation rather than adapting HTTP again. **Builder** belongs to `AssertionBuilder`, which selects the hook and builds the runtime assertion; the hook itself is not a builder. A proposed timing decorator would have to forward `Context`, configuration validation, diagnostics, attachments, and explicit status as well as `Assert`, so wrapping only the Boolean method would not preserve the complete `IAssertion` contract. Runner already times assertions in `Assertion.Execute`; use that measurement unless the new requirement specifically needs a different timing boundary.
+For the HTTP success assertion, **Strategy** describes replacing the assertion algorithm while Runner keeps the execution contract. **Adapter** describes the existing transport code translating an HTTP response into QaaS metadata; the new assertion consumes that representation rather than adapting HTTP again. **Builder** belongs to `AssertionBuilder`, which selects the hook and builds the runtime assertion; the hook itself is not a builder. A proposed timing decorator would have to forward `Context`, configuration validation, diagnostics, attachments, and explicit status as well as `Assert`, so wrapping only the Boolean method would not preserve the complete `IAssertion` contract. Runner already times assertions in `Assertion.Execute`; use that measurement unless the new requirement specifically needs a different timing boundary.
 
 ## 6. Dependency injection and ownership
 
@@ -221,6 +229,8 @@ Do not assume Autofac constructor injection automatically applies to reflection 
 Exercise: for one hook, record constructor dependencies, context injection, configuration loading, scope creation, and disposal owner. Explain what would happen if two concurrent sessions mutated the same referenced collection. Distinguish immutable collections from mutable objects contained inside them.
 
 ## 7. Testing: unit, integration, and contract
+
+Choose the smallest test that proves the behavior, then cover real component boundaries where the change crosses them.
 
 Use the repository's existing test framework and test-double library. The inspected [Framework SDK test project](https://github.com/TheSmokeTeam/QaaS.Framework/blob/4d4b192391418c7882990323f2690d0649a20465/QaaS.Framework.SDK.Tests/QaaS.Framework.SDK.Tests.csproj) uses NUnit and its analyzer; that does not imply every QaaS test project uses the same dependencies. Do not introduce a second mocking library just for an onboarding exercise.
 
@@ -257,9 +267,9 @@ public interface IClock { DateTimeOffset UtcNow { get; } }
 
 Exercise: write a three-row test plan for a configuration change: a valid value, a boundary value, and a rejected value. Add an integration or contract case only where a real boundary is affected. State what would fail without the fix. Avoid sleeps to coordinate tests; use controllable signals or bounded waits with clear diagnostics.
 
-### Tests for the worked assertion
+### Testing the assertion boundary
 
-Here is a complete focused NUnit test fixture for the hook above. It constructs real SDK data records, not a mock of the implementation. The namespace imports and data shape match the pinned SDK source.
+The assertion boundary needs tests for both status handling and the amount of evidence required to pass. The complete NUnit fixture below constructs real SDK data records, so the cases exercise the proposed hook against the SDK data shape shown in the source links.
 
 ```csharp
 using System.Collections.Immutable;
