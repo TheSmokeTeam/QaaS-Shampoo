@@ -8,13 +8,12 @@ Budget **4 hours**, including the exercises. Start after [conventions and guidel
 
 A Git repository is a version-control and release boundary. A solution (`.sln`) groups projects for development and build operations. A project (`.csproj`) defines compilation, target framework, direct project references and package dependencies. A namespace groups C# names; it does not prove which assembly owns a type. A NuGet package is a versioned consumption boundary. These are related, but they are not interchangeable.
 
-For example, the **QaaS.Framework repository** contains **QaaS.Framework.sln** and several assemblies; **QaaS.Framework.SDK** is one project and package inside it. There is no single SDK project that contains the entire framework. The inspected projects target `net10.0`. “Modern .NET” is the useful runtime description here; `.Core` is not a target-framework suffix.
+For example, the **QaaS.Framework repository** contains **QaaS.Framework.sln** and several assemblies; **QaaS.Framework.SDK** is one project and package inside it. There is no single SDK project that contains the entire framework. The inspected projects target `net10.0`.
 
 The [live documentation](https://docs.qaas.online/) supplies the customer view: Runner tests, Mocker services, hooks and Framework capabilities. For contributor ownership and dependencies, start from the project files linked below. A descriptive document can outlive a renamed or deleted project.
 
 | Name or suffix | Meaning in this checkout | Put here | Do not assume |
 | --- | --- | --- | --- |
-| `.Core` | A conceptual name sometimes used for foundational code; **no production project with this suffix exists in the four solutions mapped here** | Discuss the actual owner: SDK, Configurations, Infrastructure, or Executions | Do not create or cite `QaaS.Core` or `QaaS.Framework.Core` as an existing project |
 | `.Framework` | Repository/product family containing reusable configuration, contracts, transport support and execution scaffolding | Behavior that multiple hosts genuinely need | The entire family is dependency-free, or all its projects are contracts |
 | `.Runner` | Host/orchestrator and a family of execution-specific projects | Runner lifecycle, sessions/actions, assertion orchestration and stored results | Every assertion implementation belongs in the Runner repository |
 | `.Mocker` | Host and server/stub/controller project family | Mock service lifecycle, request handling and control | Runner must reference the whole Mocker host to control it |
@@ -478,7 +477,6 @@ The **observed structure** is supported by project references and declarations. 
 | Keep Framework independent of Runner/Mocker implementation assemblies | Contributor rule preserving the observed dependency direction. A new upward edge couples the shared foundation to a particular host. |
 | Keep reusable hook packages dependent on contracts and required capabilities, not host orchestration | Contributor rule illustrated by Common.Probes. A hook that needs a Runner builder is a signal to reconsider the boundary. |
 | Do not add cycles or move feature code into shared Infrastructure just to bypass ownership | Contributor rule. Build failures can reveal some cycles, but a successful compilation does not prove a good dependency design. |
-| For a proposed future `.Core`, forbid host, transport-client, reporting and test dependencies unless its documented purpose explicitly requires them | Proposed design constraint only. No existing `.Core` project is being described. Choose an existing owner before proposing a new layer. |
 
 Friendship is an important exception to simplistic layering diagrams. Framework.Serialization grants `InternalsVisibleTo` to SDK, SDK.Tests, Mocker.Stubs and Runner.Sessions. Framework.Executions grants friendship to selected host/test assemblies. SDK's DataSourceBuilder also declares friends. These declarations allow named assemblies to use internals; they **do not add a ProjectReference**, make the member public to everyone, or grant the same access transitively to every consumer. Inspect [Serialization's project][serialization-project] and [DataSourceBuilder][data-source-builder]; read Microsoft's [friend assembly explanation](https://learn.microsoft.com/en-us/dotnet/standard/assembly/friend).
 
