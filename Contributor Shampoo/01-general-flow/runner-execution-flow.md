@@ -110,7 +110,7 @@ using QaaS.Framework.SDK.Session.SessionDataObjects;
 
 namespace ContributorExamples;
 
-public sealed class OrderBatchConfig
+public sealed record OrderBatchConfig
 {
     [Range(1, 1000)] public int Count { get; set; } = 3;
     [Required] public string Prefix { get; set; } = "order";
@@ -184,7 +184,7 @@ The lower paths describe control traffic and application traffic separately. A h
 A useful probe can report what completed evidence is visible at an orchestration checkpoint without forcing lazy sources to generate data. Compile it in the same hook library as the generator:
 
 ```csharp
-public sealed class SnapshotProbeConfig
+public sealed record SnapshotProbeConfig
 {
     [Required] public string Label { get; set; } = "checkpoint";
 }
@@ -318,7 +318,7 @@ The result also records flakiness from selected sessions' action failures. That 
 A useful guard assertion should reject an empty selected-session collection and recorded setup/action failures rather than returning a vacuous pass. Add the following hook beside the generator:
 
 ```csharp
-public sealed class CompletedSessionConfig
+public sealed record CompletedSessionConfig
 {
     [Range(1, 1000)] public int ExpectedCount { get; set; } = 1;
 }

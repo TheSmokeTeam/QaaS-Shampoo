@@ -98,7 +98,7 @@ using QaaS.Framework.SDK.Hooks.Generator;
 using QaaS.Framework.SDK.Session.DataObjects;
 using QaaS.Framework.SDK.Session.SessionDataObjects;
 
-public sealed class SampleConfig { public int Count { get; set; } = 3; }
+public sealed record SampleConfig { public int Count { get; set; } = 3; }
 
 public sealed class NumberMessages : BaseGenerator<SampleConfig>
 {

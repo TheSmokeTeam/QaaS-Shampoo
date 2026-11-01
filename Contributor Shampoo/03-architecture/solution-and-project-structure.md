@@ -327,7 +327,7 @@ using QaaS.Framework.SDK.Session.MetaDataObjects;
 
 namespace Common.Shampoo;
 
-public sealed class MaintenanceConfiguration
+public sealed record MaintenanceConfiguration
 {
     [Range(1, 86400)] public int RetryAfterSeconds { get; set; } = 30;
     [Required] public string Message { get; set; } = "Planned maintenance";

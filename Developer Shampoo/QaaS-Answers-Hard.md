@@ -227,7 +227,7 @@ using QaaS.Framework.SDK.Hooks.Generator;
 using QaaS.Framework.SDK.Session.DataObjects;
 using QaaS.Framework.SDK.Session.SessionDataObjects;
 
-public sealed class LabelledConfig
+public sealed record LabelledConfig
 {
     [Range(1, 1000)] public int Count { get; set; } = 3;
     [Required] public string Prefix { get; set; } = "sample";

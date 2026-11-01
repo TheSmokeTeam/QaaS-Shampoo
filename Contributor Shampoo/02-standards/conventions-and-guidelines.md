@@ -111,6 +111,8 @@ Design patterns name recurring responsibilities and boundaries; use them to expl
 
 An endpoint may return `200`, `201`, or `204` legitimately. A useful assertion checks that **all retained responses are 2xx and at least a configured number arrived**. The count condition prevents an empty output from passing vacuously. This is a domain rule, so implement an external assertion hook; do not add HTTP-specific conditionals to Runner's assertion loop or change Mocker's server implementation.
 
+Declare hook configuration types as **records**, and keep the hook implementations as classes. Use property-based records with defaults and validation attributes, as below. A record does not make mutable properties immutable or replace configuration validation.
+
 The following is the complete proposed hook, not an existing built-in class. Put it in a `net10.0` class library whose QaaS SDK version matches the host. Its concrete signature comes from [BaseAssertion](https://github.com/TheSmokeTeam/QaaS.Framework/blob/11f3ec66126cf878dc34c4fab8c152ced521f3ea/QaaS.Framework.SDK/Hooks/Assertion/BaseAssertion.cs); data selection uses the existing [session/output extensions](https://github.com/TheSmokeTeam/QaaS.Framework/blob/11f3ec66126cf878dc34c4fab8c152ced521f3ea/QaaS.Framework.SDK/Extensions/SessionDataExtensions.cs), and status lives in [HTTP metadata](https://github.com/TheSmokeTeam/QaaS.Framework/blob/11f3ec66126cf878dc34c4fab8c152ced521f3ea/QaaS.Framework.SDK/Session/MetaDataObjects/Http.cs).
 
 ```csharp
@@ -123,7 +125,7 @@ using QaaS.Framework.SDK.Session.SessionDataObjects;
 
 namespace Common.Shampoo;
 
-public sealed class HttpSuccessConfiguration
+public sealed record HttpSuccessConfiguration
 {
     [Required] public string SessionName { get; set; } = string.Empty;
     [Required] public string OutputName { get; set; } = string.Empty;
